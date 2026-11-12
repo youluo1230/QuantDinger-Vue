@@ -26,6 +26,22 @@ export function seriesKey ({ indicatorId, market, symbol, timeframe }) {
 }
 
 /**
+ * Read the indicator id out of whatever the caller had on hand.
+ *
+ * The Indicator IDE labels its runtime blocks `ide-py-<id>` so two panes can hold
+ * the same indicator without colliding, and it keeps the database id in
+ * `originalId`. Taking `Number(item.id)` would give NaN for every one of them and
+ * the chart would draw nothing while reporting no error.
+ */
+export function indicatorIdOf (item) {
+  for (const candidate of [item?.indicatorId, item?.originalId, item?.id]) {
+    const value = Number(candidate)
+    if (Number.isFinite(value) && value > 0) return value
+  }
+  return 0
+}
+
+/**
  * Fetch one indicator's computed output for a chart window.
  *
  * Returns `{ plots, signals }` with each plot flattened to plain numbers, which
@@ -124,16 +140,31 @@ function colourChannel (plot) {
 /**
  * Build the study descriptor the library expects from `custom_indicators_getter`.
  *
- * The replay counter is per study instance, and the library creates a fresh
- * instance for each calculation run, so the counter naturally restarts when the
- * chart recalculates. That is why the series is indexed by call order rather
- * than by bar time: asking the library for the current bar time is not part of
- * the stable custom-study surface, and a mis-indexed lookup would shift the
- * whole indicator by a bar without any error.
+ * The custom-study contract is one `main` call per bar, in order, whose return
+ * value is the plot values for that bar. So the study is a cursor over an array
+ * that the backend already computed -- nothing is evaluated in the browser.
+ *
+ * The counter lives on the study prototype rather than on the instance because
+ * the library creates the instance once per calculation run: `init` is what it
+ * calls when a run starts, and resetting there is what makes a recalculation
+ * replay from the first bar instead of continuing where the last run stopped.
  */
 export function buildCustomIndicator ({ indicatorId, name, series, key }) {
   const label = String(name || `Indicator ${indicatorId}`)
   const primary = series.find(plot => plot.overlay) || series[0]
+  const overlaysPrice = Boolean(primary && primary.overlay !== false)
+  // The library sizes its plot table from metainfo, so a cloud contributes two
+  // entries: its upper edge and its lower edge are separate plots to it.
+  const plotSpecs = []
+  for (const plot of series) {
+    if (plot.kind === 'cloud') {
+      plotSpecs.push({ name: `${plot.name} upper`, values: plot.upper })
+      plotSpecs.push({ name: `${plot.name} lower`, values: plot.lower })
+      continue
+    }
+    plotSpecs.push({ name: plot.name, values: plot.values })
+  }
+
   const metainfo = {
     id: `qd_indicator_${indicatorId}`,
     name: label,
@@ -141,27 +172,32 @@ export function buildCustomIndicator ({ indicatorId, name, series, key }) {
     shortDescription: label,
     // A study with a price overlay lives on the price pane; anything else gets
     // its own, which is what the pane placement in the indicator output means.
-    overlay: primary ? primary.overlay !== false : false,
-    is_price_study: primary ? primary.overlay !== false : false,
-    plots: series.map((plot, index) => ({
+    overlay: overlaysPrice,
+    is_price_study: overlaysPrice,
+    plots: plotSpecs.map((_plot, index) => ({
       id: `plot_${index}`,
-      type: plot.kind === 'bar' ? 'line' : 'line'
+      type: 'line'
     })),
     defaults: { styles: {} },
     inputs: []
   }
 
   function Study () {}
+  // `init` runs at the start of every calculation, and the library passes a
+  // fresh context each time. Clearing the cursor here is the difference between
+  // a correct replay and one that starts halfway through the series.
+  Study.prototype.init = function () {
+    this.__qdIndex = 0
+  }
   Study.prototype.main = function () {
-    // Position is the number of bars this instance has already answered for.
     const index = this.__qdIndex || 0
     this.__qdIndex = index + 1
-    for (const plot of series) {
-      const value = plot.kind === 'bar' ? plot.values?.[index] : plot.values?.[index]
-      // `null` is not a valid plot input; NaN makes the library leave a gap,
-      // which is what an undefined point should look like.
-      this.__qdPlot?.(plot.name, Number.isFinite(value) ? value : NaN)
-    }
+    // A gap must stay a gap: NaN is the library's "no value here", whereas
+    // carrying the previous value forward would invent data.
+    return plotSpecs.map((plot) => {
+      const value = Array.isArray(plot.values) ? plot.values[index] : null
+      return Number.isFinite(value) ? value : NaN
+    })
   }
 
   return {
@@ -171,10 +207,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key }) {
     // The library applies `new` to this function, so it must stay a function
     // rather than an arrow.
     constructor: Study,
-    series,
-    reset () {
-      Study.prototype.__qdIndex = 0
-    }
+    series
   }
 }
 
@@ -189,7 +222,7 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
   const built = []
   const failures = []
   for (const indicator of indicators || []) {
-    const indicatorId = Number(indicator?.indicatorId ?? indicator?.id ?? 0)
+    const indicatorId = indicatorIdOf(indicator)
     if (!indicatorId) continue
     const key = seriesKey({ indicatorId, market, symbol, timeframe })
     let series = cache.get(key)
@@ -213,10 +246,10 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
       }
       cache.set(key, series)
     }
-    if (!series.length) continue
+    if (!series || !series.length) continue
     built.push(buildCustomIndicator({
       indicatorId,
-      name: indicator.name,
+      name: indicator.name || indicator.display_name || indicator.title,
       series,
       key
     }))

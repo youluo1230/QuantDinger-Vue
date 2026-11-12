@@ -137,17 +137,49 @@ describe('buildCustomIndicator', () => {
       key: 'k',
       series: [{ kind: 'line', name: 'X', values: [10, null, 30], overlay: true }]
     })
-    const seen = []
+    // The library calls `init` then `main` per bar and reads the return value,
+    // so the replay is observed through what `main` returns.
     const instance = new study.constructor()
-    instance.__qdPlot = (name, value) => seen.push([name, value])
-    instance.main()
-    instance.main()
-    instance.main()
-    assert.equal(seen.length, 3)
-    assert.deepEqual(seen[0], ['X', 10])
+    instance.init()
+    const first = instance.main()
+    const second = instance.main()
+    const third = instance.main()
+    assert.equal(first.length, 1)
+    assert.equal(first[0], 10)
     // A gap must stay a gap; carrying the previous value forward would invent data.
-    assert.ok(Number.isNaN(seen[1][1]))
-    assert.deepEqual(seen[2], ['X', 30])
+    assert.ok(Number.isNaN(second[0]))
+    assert.equal(third[0], 30)
+  })
+
+  it('restarts the replay when the library recalculates', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 6,
+      name: 'Y',
+      key: 'k',
+      series: [{ kind: 'line', name: 'Y', values: [1, 2, 3], overlay: true }]
+    })
+    const instance = new study.constructor()
+    instance.init()
+    instance.main()
+    instance.main()
+    // A recalculation calls `init` again; continuing from the cursor would draw
+    // the tail of the series against the head of the chart.
+    instance.init()
+    assert.equal(instance.main()[0], 1)
+  })
+
+  it('gives a cloud two plots so both edges reach the chart', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 7,
+      name: 'Band',
+      key: 'k',
+      series: [{ kind: 'cloud', name: 'Band', upper: [5, 6], lower: [3, 4] }]
+    })
+    assert.equal(study.metainfo.plots.length, 2)
+    const instance = new study.constructor()
+    instance.init()
+    const row = instance.main()
+    assert.deepEqual(row, [5, 3])
   })
 })
 

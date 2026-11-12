@@ -104,6 +104,10 @@ export default {
       this.indicatorError = failures.length
         ? failures.map(item => `${item.indicatorId}: ${item.reason}`).join('; ')
         : ''
+      // Reported upwards as well: the page shows it beside the symbol, where the
+      // user is looking, while the component keeps its own overlay for the case
+      // where it is embedded without a host page to report to.
+      this.$emit('indicator-error', this.indicatorError)
       return indicators
     },
     teardown () {
