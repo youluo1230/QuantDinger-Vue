@@ -107,7 +107,7 @@ import TradingViewChart from '@/components/TradingViewChart'
  * which of *our* Python indicators should be drawn on top of it, and which
  * combination to remember.
  *
- * Indicators are saved as chart templates on the backend (`/api/user/chart-templates`),
+ * Indicators are saved as chart templates on the backend (`/api/users/chart-templates`),
  * so the same study set follows the user across browsers. The template stores
  * ids and params only -- the code and the computed series stay on the server.
  */
@@ -220,7 +220,7 @@ export default {
 
     async loadTemplates () {
       try {
-        const res = await request({ url: '/api/user/chart-templates', method: 'get' })
+        const res = await request({ url: '/api/users/chart-templates', method: 'get' })
         const rows = this.unwrap(res)
         this.templates = Array.isArray(rows) ? rows : []
       } catch (_) {
@@ -294,7 +294,7 @@ export default {
       this.saving = true
       try {
         await request({
-          url: '/api/user/chart-templates',
+          url: '/api/users/chart-templates',
           method: 'post',
           data: {
             name,
@@ -340,7 +340,7 @@ export default {
       const templateId = template.id || template.template_id
       if (!templateId) return
       try {
-        await request({ url: '/api/user/chart-templates', method: 'delete', params: { template_id: templateId } })
+        await request({ url: '/api/users/chart-templates', method: 'delete', params: { template_id: templateId } })
         await this.loadTemplates()
       } catch (err) {
         this.$message.error(err?.message || this.t('tvWorkbench.templateSaveFailed'))
