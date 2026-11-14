@@ -184,15 +184,25 @@ export default {
         const list = Array.isArray(rows) ? rows : []
         this.watchlistAssets = list
           .filter(item => item && item.symbol)
-          .map((item) => ({
-            key: `${item.market || ''}|${item.symbol}|${item.exchange_id || ''}|${item.market_type || ''}|${item.instrument_id || ''}`,
-            label: [item.symbol, item.market].filter(Boolean).join(' · '),
-            market: item.market || '',
-            symbol: item.symbol || '',
-            exchangeId: item.exchange_id || '',
-            marketType: item.market_type || '',
-            instrumentId: item.instrument_id || ''
-          }))
+          .map((item) => {
+            // The watchlist stores a logical asset, so it lists every venue that
+            // can serve it rather than naming one. The chart needs a single
+            // venue: without it there is no socket to open and no exchange to
+            // ask for history.
+            const exchanges = Array.isArray(item.exchange_ids) ? item.exchange_ids : []
+            const marketTypes = Array.isArray(item.market_types) ? item.market_types : []
+            const exchangeId = item.exchange_id || exchanges[0] || ''
+            const marketType = item.market_type || marketTypes[0] || ''
+            return {
+              key: `${item.market || ''}|${item.symbol || ''}|${exchangeId}|${marketType}|${item.instrument_id || ''}`,
+              label: [item.symbol, item.market].filter(Boolean).join(' · '),
+              market: item.market || '',
+              symbol: item.symbol || '',
+              exchangeId,
+              marketType,
+              instrumentId: item.instrument_id || ''
+            }
+          })
         if (!this.selectedAssetKey && this.watchlistAssets.length) {
           this.onAssetChange(this.watchlistAssets[0].key)
           this.selectedAssetKey = this.watchlistAssets[0].key

@@ -47,9 +47,49 @@ test('symbol metadata follows the market instead of assuming crypto', () => {
   assert.match(datafeed, /Crypto: \{ type: 'crypto', session: '24x7'/)
 })
 
-test('realtime pushes only forward a closed bar', () => {
+test('realtime forwards the forming bar instead of swallowing it', () => {
+  // The library's contract is "call the callback every time you want to update
+  // the most recent bar", so the old early-return on a still-forming bar made a
+  // live feed invisible until the period closed.
   assert.match(datafeed, /pushBar\s*\(bar, resolution\)/)
-  assert.match(datafeed, /Date\.now\(\)/)
+  assert.match(datafeed, /pushBarInternal/)
+  const internal = datafeed.slice(datafeed.indexOf('const pushBarInternal'))
+  const body = internal.slice(0, internal.indexOf('\n  }'))
+  assert.doesNotMatch(body, /Date\.now\(\)/, 'a bar must not be filtered by wall clock')
+  assert.match(body, /listener\.onRealtimeCallback\(bar\)/)
+})
+
+test('a crypto chart is fed by the venue socket, not a timer', () => {
+  // The operator's requirement: real time means a stream. Swapping this for
+  // setInterval would silently reintroduce polling.
+  assert.match(datafeed, /from '@\/utils\/exchangeWs'/)
+  assert.match(datafeed, /new ExchangeKlineWs\(\)/)
+  assert.match(datafeed, /client\.connect\(/)
+  assert.match(datafeed, /getExchangeInterval\(symbolInfo\.exchangeId, timeframe\)/)
+  assert.doesNotMatch(datafeed, /setInterval/)
+})
+
+test('bar times reach the library in milliseconds', () => {
+  // `Bar.time` is documented as milliseconds; seconds put every candle in 1970.
+  assert.match(datafeed, /Math\.floor\(numeric \* 1000\)/)
+  assert.match(datafeed, /function toBarTimeMs/)
+  // The endpoint returns seconds, so the multiply is on the only parse path.
+  const parseBar = datafeed.slice(datafeed.indexOf('function parseBar'))
+  assert.match(parseBar.slice(0, 220), /toBarTimeMs/)
+})
+
+test('history pagination asks for a window, not a page', () => {
+  // `before_time` is not a parameter of /api/market-data/candles, so every
+  // scroll re-fetched the newest bars and the chart locked its left edge.
+  assert.match(datafeed, /start: requestedStart/)
+  assert.match(datafeed, /end \}\)/)
+  assert.doesNotMatch(datafeed, /before_time:/)
+  assert.match(datafeed, /countBack/)
+})
+
+test('an empty page alone does not declare the history exhausted', () => {
+  assert.match(datafeed, /earliestSeenMs/)
+  assert.match(datafeed, /exhausted/)
 })
 
 test('the library is loaded as a vendored classic script, once', () => {

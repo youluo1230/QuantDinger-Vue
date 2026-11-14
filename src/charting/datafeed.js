@@ -7,6 +7,7 @@
  */
 
 import request from '@/utils/request'
+import ExchangeKlineWs, { getExchangeInterval } from '@/utils/exchangeWs'
 
 /**
  * Library resolution -> the timeframe name the backend accepts.
@@ -32,6 +33,10 @@ const RESOLUTION_SECONDS = {
   D: 86400,
   W: 604800
 }
+
+/** Bars per `getBars` request. The backend caps a response at 20000 rows. */
+const DEFAULT_BARS = 300
+const MAX_BARS_PER_REQUEST = 20000
 
 /**
  * Translate the library's resolution into the timeframe the backend expects.
@@ -113,16 +118,24 @@ export function buildSymbolInfo ({ symbol, market, exchangeId, marketType, instr
   }
 }
 
-function toUnixSeconds (value) {
+/**
+ * Bar time the library accepts, in milliseconds.
+ *
+ * `Bar.time` is documented as "Amount of **milliseconds** since Unix epoch"
+ * (charting_library.d.ts, the `Bar` interface). The backend stores and serves
+ * bar times in seconds, and passing those straight through put every candle in
+ * 1970. The backend has sent milliseconds historically too, so both widths are
+ * accepted here and normalised to milliseconds.
+ */
+function toBarTimeMs (value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric) || numeric <= 0) return null
-  // The backend has sent both seconds and milliseconds historically; anything
-  // past the year 2286 in seconds is really milliseconds.
-  return numeric > 1e11 ? Math.floor(numeric / 1000) : Math.floor(numeric)
+  return numeric > 1e11 ? Math.floor(numeric) : Math.floor(numeric * 1000)
 }
 
+/** One backend row as a library bar. Times are milliseconds, as the library requires. */
 function parseBar (item) {
-  const time = toUnixSeconds(item?.time ?? item?.timestamp)
+  const time = toBarTimeMs(item?.time ?? item?.timestamp)
   if (time == null) return null
   const open = Number(item?.open)
   const high = Number(item?.high)
@@ -134,12 +147,31 @@ function parseBar (item) {
 }
 
 /**
+ * One socket tick as a library bar.
+ *
+ * The venue reports the candle's open time in milliseconds, which is exactly
+ * what the library keys its last bar on; the tick's own receipt time is never
+ * used, or every tick would append a candle.
+ */
+function parseTick (tick) {
+  if (!tick) return null
+  const time = toBarTimeMs(tick.timestamp)
+  if (time == null) return null
+  const open = Number(tick.open)
+  const high = Number(tick.high)
+  const low = Number(tick.low)
+  const close = Number(tick.close)
+  if (![open, high, low, close].every(Number.isFinite)) return null
+  const volume = Number(tick.volume)
+  return { time, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 }
+}
+
+/**
  * Price scale that keeps the venue's actual decimals readable.
  *
  * A chart whose pricescale is too coarse silently rounds the last digits off
  * the axis, which is worse than an error because it looks correct.
- */
-function priceScaleFor (bars) {
+ */function priceScaleFor (bars) {
   if (!bars.length) return null
   const smallest = bars.reduce((acc, bar) => {
     const value = Math.abs(bar.close)
@@ -161,6 +193,69 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
   let symbolInfo = buildSymbolInfo({ symbol, market, exchangeId, marketType, instrumentId, timeframe })
   const listeners = new Map()
   let stopped = false
+  /**
+   * Oldest bar time this chart has ever received, in milliseconds.
+   *
+   * Used to tell "the venue has no older history" apart from "this one request
+   * came back empty". Only the former may end the data.
+   */
+  let earliestSeenMs = null
+  /** The live venue socket for this chart, if one is running. */
+  let stream = null
+  let streamResolution = ''
+
+  /**
+   * Open the venue's public K-line socket and feed its ticks to the library.
+   *
+   * Crypto only: the venues we support publish a public kline stream for free,
+   * while an equity needs an authenticated feed we do not proxy. When the
+   * venue is not one of them, or the socket cannot be opened, the chart simply
+   * keeps its history — no polling timer is introduced here.
+   */
+  const startStream = (resolution) => {
+    if (stopped || stream) return
+    const timeframe = timeframeFromResolution(resolution)
+    if (!timeframe) return
+    // `getExchangeInterval` is the same venue table the stream client uses, so
+    // agreeing with it here means never opening a socket for a pair it cannot
+    // subscribe to.
+    if (!getExchangeInterval(symbolInfo.exchangeId, timeframe)) return
+    const client = new ExchangeKlineWs()
+    stream = client
+    streamResolution = resolution
+    const started = client.connect(
+      symbolInfo.ticker,
+      timeframe,
+      {
+        onTick: (tick) => {
+          const bar = parseTick(tick)
+          // The bar carries the candle's open time, so a repeated push updates
+          // the last candle instead of growing a new one per tick.
+          if (bar) pushBarInternal(bar, streamResolution)
+          onRealtimeBar?.({ bar })
+        },
+        onError: () => {
+          // The client gave up after exhausting its reconnects, or the venue
+          // refused the subscription. Keep the history the chart already has
+          // and leave the panes usable; a later resubscribe may retry.
+          stream = null
+          streamResolution = ''
+        }
+      },
+      symbolInfo.exchangeId,
+      { marketType: symbolInfo.marketType, instrumentId: symbolInfo.instrumentId }
+    )
+    if (!started) {
+      stream = null
+      streamResolution = ''
+    }
+  }
+
+  const stopStream = () => {
+    if (stream) stream.disconnect()
+    stream = null
+    streamResolution = ''
+  }
 
   const requestParams = (extra) => ({
     market: symbolInfo.market,
@@ -170,6 +265,15 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     instrument_id: symbolInfo.instrumentId || undefined,
     ...extra
   })
+
+  /** Deliver a bar to the listeners registered for its resolution. */
+  const pushBarInternal = (bar, resolution) => {
+    if (!bar) return
+    for (const [, listener] of listeners) {
+      if (listener.resolution !== resolution) continue
+      listener.onRealtimeCallback(bar)
+    }
+  }
 
   return {
     onReady (callback) {
@@ -208,15 +312,26 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
         return
       }
       const { from, to, countBack, firstDataRequest } = periodParams || {}
-      // countBack is a hard requirement: asking for a fixed limit and then
-      // filtering client side leaves gaps whenever the venue is closed, which
-      // the library renders as a broken chart.
-      const limit = Math.max(1, Math.min(1000, Number(countBack) || 300))
+      const seconds = resolutionSeconds(resolution)
+      const wanted = Math.max(1, Math.min(MAX_BARS_PER_REQUEST, Number(countBack) || DEFAULT_BARS))
+      // The library asks for a window, not a page: `to` is the exclusive right
+      // edge and `countBack` the bar count it needs ending there. Asking the
+      // backend for "the newest N bars" instead (the old `before_time` call,
+      // which the endpoint ignores) returned the same page on every scroll, so
+      // the client filter dropped everything and the chart locked its left
+      // edge.
+      const end = Number.isFinite(Number(to)) && Number(to) > 0
+        ? Math.floor(Number(to))
+        : Math.floor(Date.now() / 1000)
+      const span = seconds > 0 ? seconds * wanted : 0
+      const requestedStart = Number.isFinite(Number(from)) && Number(from) > 0
+        ? Math.min(Math.floor(Number(from)), end - 1)
+        : Math.max(0, end - span)
       try {
         const response = await request({
           url: '/api/market-data/candles',
           method: 'get',
-          params: requestParams({ timeframe, limit, before_time: firstDataRequest ? undefined : Math.ceil((to || 0)) }),
+          params: requestParams({ timeframe, limit: wanted, start: requestedStart, end }),
           timeout: 45000
         })
         if (stopped) return
@@ -227,11 +342,19 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
         const bars = response.data
           .map(parseBar)
           .filter(Boolean)
-          .filter(bar => (!from || bar.time >= from) && (!to || bar.time <= to))
           .sort((a, b) => a.time - b.time)
+        if (bars.length) earliestSeenMs = earliestSeenMs == null ? bars[0].time : Math.min(earliestSeenMs, bars[0].time)
         const scale = priceScaleFor(bars)
         if (scale) symbolInfo = { ...symbolInfo, pricescale: scale }
-        onResult(bars, { noData: bars.length === 0 })
+        // Claiming end-of-data on the first empty answer locks the chart for
+        // good, which is exactly what a cold store used to do. Only an empty
+        // page that reaches back past everything we have ever seen means the
+        // history is exhausted; a transient empty answer keeps the chart able
+        // to ask again.
+        const endMs = end * 1000
+        const exhausted = bars.length === 0 &&
+          (firstDataRequest === true || (earliestSeenMs != null && endMs <= earliestSeenMs))
+        onResult(bars, exhausted ? { noData: true } : {})
       } catch (err) {
         if (!stopped) onError?.(err?.message || String(err))
       }
@@ -240,27 +363,28 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     subscribeBars (symbolInfoArg, resolution, onRealtimeCallback, listenerGuid) {
       listeners.set(listenerGuid, { resolution, onRealtimeCallback })
       onRealtimeBar?.({ listenerGuid, resolution, symbolInfo: symbolInfoArg })
+      startStream(resolution)
     },
 
     unsubscribeBars (listenerGuid) {
       listeners.delete(listenerGuid)
+      // One stream serves the chart, so it outlives a single listener only when
+      // the library keeps another one (it does while a study subscribes too).
+      if (listeners.size === 0) stopStream()
     },
 
     /**
      * Push one bar to whichever listeners asked for its resolution.
      *
-     * Bars are only forwarded once their period has closed, because the library
-     * treats every callback as a finished bar and will otherwise rewrite the
-     * last candle with a half-formed one.
+     * The library wants the callback called "every time you want to update the
+     * most recent bar or to add a new one" (charting_library.d.ts, the
+     * subscribeBars contract), so a forming bar is forwarded too: it replaces
+     * the last candle because it carries that candle's open time. Dropping
+     * forming bars here -- which this method used to do -- left a live feed
+     * with nothing to show until the period closed.
      */
     pushBar (bar, resolution) {
-      if (!bar) return
-      const seconds = resolutionSeconds(resolution)
-      if (seconds && Date.now() < (bar.time + seconds) * 1000) return
-      for (const [, listener] of listeners) {
-        if (listener.resolution !== resolution) continue
-        listener.onRealtimeCallback(bar)
-      }
+      pushBarInternal(bar, resolution)
     },
 
     getListenerCount () {
@@ -269,6 +393,7 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
 
     destroy () {
       stopped = true
+      stopStream()
       listeners.clear()
     }
   }
