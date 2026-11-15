@@ -129,3 +129,25 @@ test('the widget accepts indicators as a loader so previews are not spent up fro
   assert.match(host, /const loadIndicators = typeof customIndicators === 'function'/)
   assert.match(host, /custom_indicators_getter: loadIndicators/)
 })
+
+test('studies are registered and then drawn, and a rebuild keeps the viewport', () => {
+  const component = read('src/components/TradingViewChart/index.vue')
+
+  // Registering a custom indicator only fills the library's study registry; the
+  // bundle pushes into `studyLibrary` and stops. Nothing appears on the chart
+  // until `createStudy` is called, so both steps have to be present.
+  assert.match(component, /customIndicators: \(\) => this\.loadIndicators\(\)/)
+  assert.match(component, /createStudy\(/)
+  assert.match(component, /onChartReady/)
+
+  // Drawing is deferred to the ready callback: before that, `createStudy`
+  // resolves to null and the study silently never appears.
+  const mount = component.slice(component.indexOf('async mount ()'), component.indexOf('async reconcileStudies'))
+  assert.match(mount, /onChartReady/)
+  assert.doesNotMatch(mount, /^\s+await this\.drawStudies\(\)/m)
+
+  // A changed set rebuilds the widget, which must not read as a reload.
+  const reconcile = component.slice(component.indexOf('async reconcileStudies'), component.indexOf('captureViewport () {'))
+  assert.match(reconcile, /captureViewport/)
+  assert.match(reconcile, /restoreViewport/)
+})

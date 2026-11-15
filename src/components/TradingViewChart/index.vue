@@ -57,14 +57,13 @@ export default {
       this.remount()
     },
     indicators: {
-      // A study cannot be updated in place: the library has no call that swaps
-      // an existing study's data, and the precomputed series is what the study
-      // replays. So a changed indicator set means a fresh widget, and the cache
-      // is dropped with it because drafts are keyed by their own text.
+      // A changed set is rebuilt rather than patched: the getter is consulted
+      // once at mount, so a study that was not registered then cannot be drawn
+      // later. The rebuild restores the visible range so it does not read as a
+      // reload -- see `reconcileStudies`.
       deep: true,
       handler () {
-        this.seriesCache.clear()
-        this.remount()
+        this.reconcileStudies()
       }
     }
   },
@@ -95,7 +94,112 @@ export default {
         // A missing vendored bundle must not take the page down with it; the
         // message is what an operator needs to see.
         this.error = err?.message || String(err)
+        return
       }
+      // The registry is populated by the getter above, but nothing is drawn
+      // until the chart exists. `onChartReady` is the point at which
+      // `createStudy` stops resolving to null; drawing earlier is a silent
+      // no-op, which is exactly how the studies went missing before.
+      this.handle.widget.onChartReady?.(() => {
+        this.drawStudies()
+      })
+    },
+    /**
+     * Bring the drawn studies in line with the checked set.
+     *
+     * Two facts about the library shape this:
+     *
+     * 1. `custom_indicators_getter` only *registers* studies -- the bundle pushes
+     *    each definition into `studyLibrary` and stops there. Registering an
+     *    indicator does not draw it; `createStudy` does. Earlier versions of this
+     *    component registered and never drew, which is why checking a box changed
+     *    nothing on the chart.
+     * 2. The getter is asked once, when the widget is built. A study that was not
+     *    registered then cannot be created later -- `createStudy` resolves to
+     *    null for an unknown name.
+     *
+     * So a changed set means a rebuilt widget, and the job here is to make that
+     * rebuild invisible: keep the visible time range and re-draw afterwards.
+     * Rebuilding is also unavoidable for a changed draft, whose numbers are
+     * different and which no call can swap in place.
+     */
+    async reconcileStudies () {
+      if (!this.handle) return
+      const viewport = this.captureViewport()
+      this.seriesCache.clear()
+      await this.remount()
+      this.restoreViewport(viewport)
+    },
+    /** The visible time range, or null when it cannot be read. */
+    captureViewport () {
+      try {
+        const range = this.handle?.widget?.activeChart?.()?.getVisibleRange?.()
+        if (range && range.from && range.to) {
+          return { from: range.from, to: range.to }
+        }
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('getVisibleRange failed', err)
+        }
+      }
+      return null
+    },
+    /**
+     * Put the chart back where the user left it.
+     *
+     * Called after a rebuild so a checkbox toggle does not read as "the chart
+     * reloaded": the bars come back in the same place, and only the study list
+     * changes. A failure here leaves the default view, which is cosmetic — the
+     * study set is what the user asked for.
+     */
+    restoreViewport (viewport) {
+      if (!viewport) return
+      try {
+        this.handle?.widget?.activeChart?.()?.setVisibleRange?.(viewport)
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('setVisibleRange failed', err)
+        }
+      }
+    },
+    /**
+     * Draw the studies whose definitions were registered at mount.
+     *
+     * Registered is not drawn: `custom_indicators_getter` fills the library's
+     * study registry, and `createStudy` is what puts one on the chart. Both
+     * steps are needed and only the first was happening.
+     */
+    async drawStudies () {
+      if (!this.indicators.length) return
+      const { indicators, failures } = await resolveCustomIndicators({
+        indicators: this.indicators,
+        market: this.market,
+        symbol: this.symbol,
+        timeframe: this.timeframe,
+        cache: this.seriesCache
+      })
+      this.reportFailures(failures)
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart) return
+      for (const study of indicators) {
+        try {
+          // Overlay placement comes from the study's own metainfo; forcing the
+          // overlay flag here would fight the indicator author's intent.
+          // eslint-disable-next-line no-await-in-loop
+          await chart.createStudy(study.name, study.metainfo.overlay === true, false, {})
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('createStudy failed', study.name, err)
+          }
+        }
+      }
+    },
+    reportFailures (failures) {
+      const list = Array.isArray(failures) ? failures : []
+      this.indicatorError = list.length
+        ? list.map(item => `${item.indicatorId}: ${item.reason}`).join('; ')
+        : ''
+      this.$emit('indicator-error', this.indicatorError)
     },
     /**
      * Resolve the studies the chart should draw.
@@ -113,13 +217,10 @@ export default {
         timeframe: this.timeframe,
         cache: this.seriesCache
       })
-      this.indicatorError = failures.length
-        ? failures.map(item => `${item.indicatorId}: ${item.reason}`).join('; ')
-        : ''
-      // Reported upwards as well: the page shows it beside the symbol, where the
-      // user is looking, while the component keeps its own overlay for the case
-      // where it is embedded without a host page to report to.
-      this.$emit('indicator-error', this.indicatorError)
+      this.reportFailures(failures)
+      // Registered here, drawn by `drawStudies` once the widget reports ready.
+      // The library only takes the registry from this getter; it never puts a
+      // study on the chart by itself.
       return indicators
     },
     teardown () {
