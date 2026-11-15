@@ -1606,26 +1606,59 @@ export default {
       ]
     },
     /**
-     * The script the TradingView surface should draw, right now.
+     * The studies the TradingView surface should draw, right now.
      *
-     * It reads the live editor buffer rather than the saved row, so the chart
-     * answers "what does this code do" instead of "what did the last save do".
-     * An empty buffer yields an empty list, which leaves the chart bare rather
-     * than showing the previous indicator's lines under the new code.
+     * Two things make this different from pointing the chart at a saved row.
+     * The indicator the author is editing comes from the live editor buffer, so
+     * the chart answers "what does this code do" rather than "what did the last
+     * save do". And the other checked indicators come along, because the IDE
+     * already draws several at once on the bundled canvas -- switching renderer
+     * should not quietly drop the comparison you set up.
+     *
+     * An empty buffer contributes nothing rather than falling back to the stored
+     * copy: showing the previous version under new code is worse than showing
+     * no line at all.
      */
     tvDraftIndicators () {
       if (this.chartSurface !== 'tradingview') return []
-      const code = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
-      if (!code || !String(code).trim()) return []
-      const indicator = this.selectedIndicatorObj || {}
-      return [{
-        indicatorId: this.selectedIndicatorId || 0,
-        originalId: this.selectedIndicatorId || 0,
-        name: this.indicatorDisplayName(indicator) || this.extractIndicatorNameFromCode(code),
-        code,
-        params: this.resolveIndicatorRuntimeParams(indicator, code),
-        limit: 300
-      }]
+      const liveCode = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
+      const editingId = Number(this.selectedIndicatorId || 0)
+      const studies = []
+      const seen = new Set()
+
+      for (const rawId of this.chartVisibleIndicatorIds || []) {
+        const id = Number(rawId)
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        const indicator = this.indicators.find(item => Number(item.id) === id)
+        if (!indicator) continue
+        // The row being edited is previewed from the buffer instead of its
+        // saved code; every other row is previewed from what is stored.
+        const code = id === editingId && String(liveCode || '').trim()
+          ? liveCode
+          : this.getIndicatorExecutableCode(indicator)
+        if (!String(code || '').trim()) continue
+        studies.push({
+          indicatorId: id,
+          originalId: id,
+          name: this.indicatorDisplayName(indicator) || this.extractIndicatorNameFromCode(code),
+          code,
+          params: this.resolveIndicatorRuntimeParams(indicator, code)
+        })
+      }
+
+      // An unsaved script has no row to be checked yet, so the buffer itself is
+      // the only thing there is to draw.
+      if (!editingId && String(liveCode || '').trim()) {
+        studies.push({
+          indicatorId: 0,
+          originalId: 0,
+          name: this.extractIndicatorNameFromCode(liveCode),
+          code: liveCode,
+          params: {}
+        })
+      }
+      return studies
     },
     tvDraftSymbol () {
       const active = this.activeChartPane

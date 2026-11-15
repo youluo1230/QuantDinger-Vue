@@ -76,3 +76,18 @@ test('the chart workspace is reachable from the sidebar, next to Indicators', ()
     'the chart entry belongs with the analysis pages, not among the brokers'
   )
 })
+
+test('the IDE surface draws every checked indicator, not just the edited one', () => {
+  const ide = read('src/views/indicator-ide/index.vue')
+
+  // The bundled canvas draws whatever is checked in the indicator dropdown, so
+  // switching renderer must not silently drop the comparisons the author set up.
+  const fn = ide.slice(ide.indexOf('tvDraftIndicators ()'), ide.indexOf('tvDraftSymbol ()'))
+  assert.match(fn, /chartVisibleIndicatorIds/)
+  assert.match(fn, /const studies = \[\]/)
+  // The row under edit comes from the editor buffer; the rest come from storage.
+  assert.match(fn, /id === editingId && String\(liveCode \|\| ''\)\.trim\(\)/)
+  assert.match(fn, /this\.getIndicatorExecutableCode\(indicator\)/)
+  // An unsaved script still has to be drawable.
+  assert.match(fn, /!editingId && String\(liveCode \|\| ''\)\.trim\(\)/)
+})
