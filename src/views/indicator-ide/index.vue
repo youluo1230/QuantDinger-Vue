@@ -393,6 +393,18 @@
                           </a-button>
                         </span>
                       </a-tooltip>
+                      <a-tooltip :title="$t('indicatorIde.chartSurface.hint')">
+                        <a-button
+                          size="small"
+                          class="chart-panel-action-btn chart-panel-surface-btn"
+                          :type="chartSurface === 'tradingview' ? 'primary' : 'default'"
+                          :aria-label="$t('indicatorIde.chartSurface.hint')"
+                          @click="toggleChartSurface"
+                        >
+                          <a-icon type="fund" />
+                          <span>{{ chartSurface === 'tradingview' ? $t('indicatorIde.chartSurface.tv') : $t('indicatorIde.chartSurface.local') }}</span>
+                        </a-button>
+                      </a-tooltip>
                       <a-tooltip :title="chartFullscreen ? $t('indicatorIde.exitFullscreen') : $t('indicatorIde.fullscreenChart')">
                         <a-button
                           size="small"
@@ -668,7 +680,21 @@
                         </span>
                       </button>
                       <div class="ide-chart-pane-body">
+                        <trading-view-chart
+                          v-if="chartSurface === 'tradingview' && pane.id === activeChartPaneId"
+                          :key="`tv-${pane.id}-${tvDraftSymbol}-${tvDraftTimeframe}`"
+                          :symbol="tvDraftSymbol"
+                          :market="tvDraftMarket"
+                          :exchange-id="pane.market === 'Crypto' ? pane.exchangeId : ''"
+                          :market-type="pane.market === 'Crypto' ? pane.marketType : 'spot'"
+                          :instrument-id="pane.market === 'Crypto' ? pane.instrumentId : ''"
+                          :timeframe="tvDraftTimeframe"
+                          :theme="chartTheme"
+                          :indicators="tvDraftIndicators"
+                          @indicator-error="handleTvIndicatorError"
+                        />
                         <kline-chart
+                          v-else
                           :ref="chartPaneRefName(pane.id)"
                           :symbol="pane.symbol"
                           :market="pane.market"
@@ -1283,6 +1309,7 @@ import { renderSafeMarkdown } from '@/utils/safeMarkdown'
 import { clampFloatingPanelPosition, snapFloatingPanelPosition } from '@/utils/floatingPanel.mjs'
 import { applyCodeEditsToCodeMirror, applyExactCodeEdits, candidateCodeEditOperations, setCodeMirrorValueWithHighlight } from '@/utils/codeEdits'
 import KlineChart from '@/views/indicator-analysis/components/KlineChart.vue'
+import TradingViewChart from '@/components/TradingViewChart/index.vue'
 import QuickTradePanel from '@/components/QuickTradePanel/QuickTradePanel'
 import IndicatorMarketPicker from './components/IndicatorMarketPicker.vue'
 import { Modal } from 'ant-design-vue'
@@ -1341,7 +1368,7 @@ const supportedChartTypes = new Set([
 export default {
   name: 'IndicatorIDE',
   mixins: [baseMixin],
-  components: { KlineChart, QuickTradePanel, IndicatorMarketPicker, AddWatchlistModal },
+  components: { KlineChart, TradingViewChart, QuickTradePanel, IndicatorMarketPicker, AddWatchlistModal },
   data () {
     return {
       userId: null,
@@ -1349,6 +1376,10 @@ export default {
       loadingIndicators: false,
       selectedIndicatorId: undefined,
       chartVisibleIndicatorIds: [],
+      // Which renderer the chart pane uses. The TradingView surface is the
+      // one an author checks their work on; the bundled canvas stays
+      // available because it is the only one that renders derived candles.
+      chartSurface: 'klinecharts',
       indicatorDropdownVisible: false,
       indicatorMarketVisible: false,
       indicatorsLoadedAt: 0,
@@ -1573,6 +1604,43 @@ export default {
         { value: 2, label: this.$t('indicatorIde.multiChart.dual') },
         { value: 4, label: this.$t('indicatorIde.multiChart.quad') }
       ]
+    },
+    /**
+     * The script the TradingView surface should draw, right now.
+     *
+     * It reads the live editor buffer rather than the saved row, so the chart
+     * answers "what does this code do" instead of "what did the last save do".
+     * An empty buffer yields an empty list, which leaves the chart bare rather
+     * than showing the previous indicator's lines under the new code.
+     */
+    tvDraftIndicators () {
+      if (this.chartSurface !== 'tradingview') return []
+      const code = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
+      if (!code || !String(code).trim()) return []
+      const indicator = this.selectedIndicatorObj || {}
+      return [{
+        indicatorId: this.selectedIndicatorId || 0,
+        originalId: this.selectedIndicatorId || 0,
+        name: this.indicatorDisplayName(indicator) || this.extractIndicatorNameFromCode(code),
+        code,
+        params: this.resolveIndicatorRuntimeParams(indicator, code),
+        limit: 300
+      }]
+    },
+    tvDraftSymbol () {
+      const active = this.activeChartPane
+      return (active && active.symbol) || ''
+    },
+    tvDraftMarket () {
+      const active = this.activeChartPane
+      return (active && active.market) || 'Crypto'
+    },
+    tvDraftTimeframe () {
+      const active = this.activeChartPane
+      return (active && active.timeframe) || '1H'
+    },
+    activeChartPane () {
+      return (this.chartPanes || []).find(item => item.id === this.activeChartPaneId) || this.chartPanes[0] || null
     },
     visibleChartPanes () {
       return (this.chartPanes || []).slice(0, this.chartLayoutMode)
@@ -1858,6 +1926,14 @@ export default {
         paneId
       )
       return base
+    },
+    toggleChartSurface () {
+      this.chartSurface = this.chartSurface === 'tradingview' ? 'klinecharts' : 'tradingview'
+    },
+    handleTvIndicatorError (message) {
+      // The chart keeps the candles when a study fails; surfacing the reason is
+      // what stops "why is my indicator missing" from becoming a mystery.
+      if (message) this.$message.warning(message)
     },
     hydrateChartPaneIndicators (items, visibleIndicatorIds, paneId) {
       const nonPython = this.normalizePersistedChartIndicators(items)

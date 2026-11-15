@@ -30,9 +30,10 @@ export default {
     timeframe: { type: String, default: '1H' },
     theme: { type: String, default: 'dark' },
     locale: { type: String, default: 'zh' },
-    // Saved indicators from the Indicator IDE, as `{indicatorId, name, params}`.
-    // They are computed by the backend and replayed in the library; nothing is
-    // evaluated in the browser.
+    // Indicators to draw, as `{indicatorId, name, params, code}`. They are
+    // computed by the backend and replayed in the library; nothing is evaluated
+    // in the browser. `code` carries an unsaved draft so the editor can show
+    // what the author is typing rather than the last saved version.
     indicators: { type: Array, default: () => [] }
   },
   data () {
@@ -54,6 +55,17 @@ export default {
     },
     theme () {
       this.remount()
+    },
+    indicators: {
+      // A study cannot be updated in place: the library has no call that swaps
+      // an existing study's data, and the precomputed series is what the study
+      // replays. So a changed indicator set means a fresh widget, and the cache
+      // is dropped with it because drafts are keyed by their own text.
+      deep: true,
+      handler () {
+        this.seriesCache.clear()
+        this.remount()
+      }
     }
   },
   mounted () {

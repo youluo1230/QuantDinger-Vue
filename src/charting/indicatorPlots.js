@@ -173,8 +173,28 @@ export function barTimeCandidates (ctx) {
  * a different pair produces different numbers, and replaying the wrong array
  * would draw a plausible but false line.
  */
-export function seriesKey ({ indicatorId, market, symbol, timeframe }) {
-  return `${indicatorId}|${market}|${symbol}|${timeframe}`
+export function seriesKey ({ indicatorId, market, symbol, timeframe, revision = '' }) {
+  // `revision` separates an unsaved draft from the saved row behind the same
+  // id. Without it the first preview of a draft would be cached under the
+  // stored indicator's key and the editor would keep painting stale output.
+  return `${indicatorId}|${market}|${symbol}|${timeframe}|${revision}`
+}
+
+/**
+ * Short, stable fingerprint for a draft script.
+ *
+ * Two edits an author made are two different programs and must not share a
+ * cache entry, but the key only has to distinguish them within one tab, so a
+ * non-cryptographic hash is the right cost. Collisions would show stale output
+ * for one frame at worst.
+ */
+export function draftRevision (code) {
+  const text = String(code || '')
+  let hash = 5381
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0
+  }
+  return `${text.length.toString(36)}${(hash >>> 0).toString(36)}`
 }
 
 /**
@@ -201,7 +221,7 @@ export function indicatorIdOf (item) {
  * their colour arrays alongside, because the library colours a series per bar
  * and taking only the values would silently drop the author's intent.
  */
-export async function loadSeries ({ indicatorId, market, symbol, timeframe, limit = 300, params = {} }) {
+export async function loadSeries ({ indicatorId, market, symbol, timeframe, limit = 300, params = {}, code = '', name = '' }) {
   const response = await request({
     url: '/api/indicator/chart-preview',
     method: 'post',
@@ -211,7 +231,11 @@ export async function loadSeries ({ indicatorId, market, symbol, timeframe, limi
       symbol,
       timeframe,
       limit,
-      params
+      params,
+      // Unsaved editor text travels with the request. Without it a preview can
+      // only ever show the last saved version, which turns every look at the
+      // chart into a save.
+      ...(code && String(code).trim() ? { code, name } : {})
     },
     timeout: 60000
   })
@@ -416,8 +440,13 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
   const failures = []
   for (const indicator of indicators || []) {
     const indicatorId = indicatorIdOf(indicator)
-    if (!indicatorId) continue
-    const key = seriesKey({ indicatorId, market, symbol, timeframe })
+    const inlineCode = String(indicator.code || '')
+    // An editor draft has no saved row to key on, so its own text is the
+    // identity. Hashing keeps the key short and stops a long script from
+    // bloating the cache map.
+    if (!indicatorId && !inlineCode.trim()) continue
+    const revision = inlineCode.trim() ? draftRevision(inlineCode) : ''
+    const key = seriesKey({ indicatorId, market, symbol, timeframe, revision })
     let loaded = cache.get(key)
     // Tolerate a bare plot array so a cache seeded elsewhere still works; it
     // simply has no bar times, and every bar would come out as a gap.
@@ -430,7 +459,9 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
           symbol,
           timeframe,
           limit: indicator.limit || 300,
-          params: indicator.params || {}
+          params: indicator.params || {},
+          code: inlineCode,
+          name: indicator.name || indicator.display_name || ''
         })
       } catch (err) {
         // One indicator that fails to compute -- a runtime error in its Python,

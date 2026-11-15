@@ -280,7 +280,21 @@ describe('seriesKey', () => {
     const other = { ...base, symbol: 'ETH/USDT' }
     assert.notEqual(plots.seriesKey(base), plots.seriesKey(other))
     // Replaying another pair's numbers would draw a plausible, false line.
-    assert.match(plots.seriesKey(base), /^7\|Crypto\|BTC\/USDT\|1H$/)
+    assert.match(plots.seriesKey(base), /^7\|Crypto\|BTC\/USDT\|1H\|$/)
+  })
+
+  it('keeps an unsaved draft apart from the saved row behind the same id', () => {
+    const base = { indicatorId: 7, market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H' }
+    const draft = { ...base, revision: plots.draftRevision('plot(close)') }
+    // An editor preview must not be served from the stored indicator's entry,
+    // or the first look at a draft shows the previous version's lines.
+    assert.notEqual(plots.seriesKey(base), plots.seriesKey(draft))
+    assert.match(plots.seriesKey(draft), /^7\|Crypto\|BTC\/USDT\|1H\|[a-z0-9]+$/)
+  })
+
+  it('gives two different drafts different revisions', () => {
+    assert.notEqual(plots.draftRevision('plot(close)'), plots.draftRevision('plot(open)'))
+    assert.equal(plots.draftRevision('plot(close)'), plots.draftRevision('plot(close)'))
   })
 })
 
