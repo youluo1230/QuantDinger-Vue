@@ -58,3 +58,21 @@ test('every rendered chart timeframe maps to a backend timeframe', () => {
   }
   assert.doesNotMatch(page, /'2H'/, 'the backend has no 2h timeframe')
 })
+
+test('the chart workspace is reachable from the sidebar, next to Indicators', () => {
+  const layout = read('src/layouts/BasicLayout.vue')
+
+  // The sidebar is assembled from a hand-written order list, so a route that is
+  // missing from it sorts to the bottom of the menu — below Settings, which is
+  // where nobody looks. The route existing is not the same as being findable.
+  const order = layout.slice(layout.indexOf('const order = ['), layout.indexOf(']', layout.indexOf('const order = [')))
+  assert.match(order, /'\/tv-workbench'/)
+  assert.ok(
+    order.indexOf("'/tv-workbench'") > order.indexOf("'/indicator-ide'"),
+    'the chart entry belongs after Indicators, not at the end of the menu'
+  )
+  assert.ok(
+    order.indexOf("'/tv-workbench'") < order.indexOf("'/strategy-ide'"),
+    'the chart entry belongs with the analysis pages, not among the brokers'
+  )
+})
