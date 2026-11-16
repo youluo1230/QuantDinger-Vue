@@ -35,3 +35,6 @@ package-lock.json
 /screenshots/
 /playwright-report/
 /test-results/
+
+# Local corpus dumps and one-off probes
+/.scratch/

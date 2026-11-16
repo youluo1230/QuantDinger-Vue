@@ -28,10 +28,35 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const source = readFileSync(new URL('../../src/charting/indicatorPlots.js', import.meta.url), 'utf8')
-const stubbed = source.replace(
-  /^import request from '@\/utils\/request'$/m,
-  'const request = (...args) => (globalThis.__qdRequest || (async () => ({ data: null })))(...args)'
-)
+const stubbed = source
+  .replace(
+    /^import request from '@\/utils\/request'$/m,
+    'const request = (...args) => (globalThis.__qdRequest || (async () => ({ data: null })))(...args)'
+  )
+  // The Pine runtime is a sibling import with no alias, but it also pulls in the
+  // real `pinets` package, which these tests do not need: what they exercise is
+  // the replay contract and the wiring, not the interpreter. The stub keeps the
+  // same surface and resolves `globalThis.__qdPine` on every call, so a test can
+  // swap in its own runtime without reloading the module.
+  .replace(
+    /^import \{[\s\S]*?\} from '\.\/pineRuntime'$/m,
+    [
+      'const qdPine = () => globalThis.__qdPine || {',
+      '  runPineStudy: async () => ({ plots: [], signals: [], candleTimes: [] })',
+      '}',
+      'const DEFAULT_STUDY_BARS = 1500',
+      'const MAX_STUDY_BARS = 20000',
+      'const runPineStudy = (...args) => qdPine().runPineStudy(...args)',
+      'const toPineBar = (row) => {',
+      '  const time = Number(row?.time)',
+      '  if (!Number.isFinite(time) || time <= 0) return null',
+      '  const open = Number(row.open); const high = Number(row.high)',
+      '  const low = Number(row.low); const close = Number(row.close)',
+      '  if (![open, high, low, close].every(Number.isFinite)) return null',
+      '  return { time: time > 1e11 ? time : time * 1000, open, high, low, close, volume: Number(row.volume) || 0 }',
+      '}'
+    ].join('\n')
+  )
 const modulePath = join(tmpdir(), `qd_indicatorPlots_${process.pid}.mjs`)
 writeFileSync(modulePath, stubbed)
 const plots = await import(pathToFileURL(modulePath).href)
@@ -69,14 +94,36 @@ function studyOver ({ values, times, extra = {} }) {
   })
 }
 
-/** Run one preview response through the real resolve path. */
-async function withPreview (payload, run) {
-  globalThis.__qdRequest = async () => ({ data: payload })
+/**
+ * Run one resolve with a stub market-data response and Pine runtime.
+ *
+ * The study path has two inputs now: the bars, which come from the candles
+ * endpoint, and the plots, which come from executing the script. `candles: null`
+ * stands for an endpoint that answered nothing, and `plots: null` for a runtime
+ * that produced nothing -- both must surface as a reported failure rather than
+ * an empty chart with no explanation.
+ */
+async function withStudy ({ candles = null, plots = null, run }) {
+  globalThis.__qdRequest = async () => ({ data: candles })
+  if (plots) globalThis.__qdPine = { runPineStudy: async () => plots }
   try {
     return await run()
   } finally {
     delete globalThis.__qdRequest
+    delete globalThis.__qdPine
   }
+}
+
+/** Candles shaped like `/api/market-data/candles` answers them: seconds. */
+function candleRows (times) {
+  return times.map((time, index) => ({
+    time: time / 1000,
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100.5 + index,
+    volume: 1000
+  }))
 }
 
 describe('normalizePlots', () => {
@@ -436,22 +483,118 @@ describe('buildCustomIndicator', () => {
   })
 })
 
+describe('plot kinds in the study contract', () => {
+  const times = candleTimesMs(3)
+
+  it('declares a shapes plot with the shape and location the script asked for', () => {
+    const series = plots.normalizePlots([
+      {
+        name: 'Up',
+        kind: 'shape',
+        shape: 'shape_triangle_up',
+        location: 'BelowBar',
+        color: '#00e676',
+        textColor: '#FFFFFF',
+        text: 'BUY',
+        data: [null, 1, null]
+      }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 11, name: 'Markers', key: 'k', series, candleTimes: times })
+    assert.deepEqual(study.metainfo.plots, [{ id: 'plot_0', type: 'shapes' }])
+    assert.equal(study.metainfo.defaults.styles.plot_0.plottype, 'shape_triangle_up')
+    assert.equal(study.metainfo.defaults.styles.plot_0.location, 'BelowBar')
+    // The value is 1 on the bar that fires and a gap everywhere else.
+    const instance = new study.constructor()
+    assert.deepEqual(instance.main(ctxAt(times[1])), [1])
+    assert.ok(Number.isNaN(instance.main(ctxAt(times[0]))[0]))
+  })
+
+  it('declares four OHLC plots for a candle drawing', () => {
+    // The library reads one value per declared plot, so a candle has to be
+    // declared as open/high/low/close or three of the four prices vanish.
+    const series = plots.normalizePlots([
+      {
+        name: 'Candles',
+        kind: 'candle',
+        color: '#4CAF50',
+        data: [{ open: 10, high: 12, low: 9, close: 11 }, null]
+      }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 12, name: 'Candles', key: 'k', series, candleTimes: times.slice(0, 2) })
+    assert.deepEqual(study.metainfo.plots.map(plot => plot.type), ['ohlc_open', 'ohlc_high', 'ohlc_low', 'ohlc_close'])
+    assert.equal(study.metainfo.plots[0].target, 'plotcandle_0')
+    assert.equal(study.metainfo.ohlcPlots.plotcandle_0.title, 'Candles')
+    const instance = new study.constructor()
+    assert.deepEqual(instance.main(ctxAt(times[0])), [10, 12, 9, 11])
+  })
+
+  it('declares a colourer plot with a palette built from the colours used', () => {
+    const series = plots.normalizePlots([
+      { name: 'Bar colour', kind: 'barcolor', colors: ['#2962FF', null, '#EF4444'] }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 13, name: 'Bars', key: 'k', series, candleTimes: times })
+    assert.equal(study.metainfo.plots[0].type, 'bar_colorer')
+    const palette = study.metainfo.palettes.palette_0
+    assert.equal(palette.colors.length, 2)
+    // Values are 1-based so index 0 is free: a bar the script never coloured
+    // must not share a palette entry with the first real colour.
+    assert.deepEqual(Object.keys(palette.valToIndex), ['1', '2'])
+    const instance = new study.constructor()
+    assert.deepEqual(instance.main(ctxAt(times[0])), [1])
+    assert.deepEqual(instance.main(ctxAt(times[2])), [2])
+    // An uncoloured bar answers NaN, which the library reads as "no colour"
+    // rather than as palette entry zero.
+    assert.ok(Number.isNaN(instance.main(ctxAt(times[1]))[0]))
+  })
+
+  it('fills between two named plots', () => {
+    const series = plots.normalizePlots([
+      { name: 'A', kind: 'line', data: [5, 6] },
+      { name: 'B', kind: 'line', data: [3, 4] },
+      { name: 'Fill A / B', kind: 'fill', plot1: 'A', plot2: 'B', color: '#2962FF33' }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 14, name: 'Band', key: 'k', series, candleTimes: times.slice(0, 2) })
+    assert.equal(study.metainfo.filledAreas.length, 1)
+    assert.equal(study.metainfo.filledAreas[0].objAId, 'plot_0')
+    assert.equal(study.metainfo.filledAreas[0].objBId, 'plot_1')
+    assert.equal(study.metainfo.defaults.filledAreasStyle.fill_0.color, '#2962FF33')
+  })
+
+  it('drops a fill whose sides were never declared', () => {
+    const series = plots.normalizePlots([
+      { name: 'A', kind: 'line', data: [5] },
+      { name: 'Fill A / Missing', kind: 'fill', plot1: 'A', plot2: 'Missing' }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 15, name: 'Half', key: 'k', series, candleTimes: times.slice(0, 1) })
+    assert.equal(study.metainfo.filledAreas, undefined)
+    assert.equal(study.metainfo.plots.length, 1)
+  })
+
+  it('passes the line style through to the plot defaults', () => {
+    const series = plots.normalizePlots([
+      { name: 'Hist', kind: 'line', style: { plottype: 1 }, data: [1, 2] }
+    ])
+    const study = plots.buildCustomIndicator({ indicatorId: 16, name: 'Hist', key: 'k', series, candleTimes: times.slice(0, 2) })
+    assert.equal(study.metainfo.defaults.styles.plot_0.plottype, 1)
+  })
+})
+
 describe('resolveCustomIndicators', () => {
   it('reports a failing indicator instead of taking the chart down', async () => {
     const cache = plots.createSeriesCache()
     const result = await plots.resolveCustomIndicators({
-      indicators: [{ indicatorId: 1, name: 'Empty' }],
+      indicators: [{ indicatorId: 1, name: 'Empty', code: '//@version=5\nindicator("x")\nplot(close)' }],
       market: 'Crypto',
       symbol: 'BTC/USDT',
       timeframe: '1H',
       cache
     })
-    // The stub request returns no payload, so loadSeries throws. The chart still
-    // draws its bars; the failure is reported, not propagated.
+    // The stub request returns no bars, so the study cannot run. The chart still
+    // draws its own candles; the failure is reported, not propagated.
     assert.deepEqual(result.indicators, [])
     assert.equal(result.failures.length, 1)
     assert.equal(result.failures[0].indicatorId, 1)
-    assert.match(result.failures[0].reason, /returned nothing/)
+    assert.match(result.failures[0].reason, /No bars for/)
   })
 
   it('ignores entries without an id', async () => {
@@ -469,29 +612,40 @@ describe('resolveCustomIndicators', () => {
   it('caches the bar times with the plots they belong to', async () => {
     const times = candleTimesMs(3)
     const cache = plots.createSeriesCache()
+    const code = '//@version=5\nindicator("e")\nplot(close)'
     const run = () => plots.resolveCustomIndicators({
-      indicators: [{ indicatorId: 2, name: 'EMA' }],
+      indicators: [{ indicatorId: 2, name: 'EMA', code }],
       market: 'Crypto',
       symbol: 'BTC/USDT',
       timeframe: '1H',
       cache
     })
-    const payload = {
-      candles: times.map(time => ({ time: time / 1000 })),
-      plots: [{ name: 'EMA', type: 'line', data: [10, 20, 30] }]
-    }
-    const first = await withPreview(payload, run)
+    const first = await withStudy({
+      candles: candleRows(times),
+      plots: {
+        plots: [{ name: 'EMA', type: 'line', overlay: true, data: [10, 20, 30] }],
+        signals: [],
+        candleTimes: times
+      },
+      run
+    })
     assert.equal(first.indicators.length, 1)
     // Without the times the cached plots are an ordered list with no link back
     // to the bars, and every bar of a cached study would be a gap.
+    // The key carries the draft revision: an edited buffer is a different
+    // program and must not share the saved row's entry.
     const cached = cache.get(plots.seriesKey({
-      indicatorId: 2, market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H'
+      indicatorId: 2,
+      market: 'Crypto',
+      symbol: 'BTC/USDT',
+      timeframe: '1H',
+      revision: plots.draftRevision(code)
     }))
     assert.deepEqual(cached.candleTimes, times)
     assert.equal(cached.plots.length, 1)
 
     // A second resolve is served from the cache and still replays correctly.
-    const second = await withPreview(null, run)
+    const second = await withStudy({ candles: null, run })
     assert.equal(second.indicators.length, 1)
     assert.deepEqual(new second.indicators[0].constructor().main(ctxAt(times[1])), [20])
   })
@@ -515,27 +669,31 @@ describe('resolveCustomIndicators', () => {
     assert.ok(Number.isNaN(instance.main(ctxAt(START))[0]))
   })
 
-  it('replays a real preview onto the bar times the backend returned', async () => {
-    // The end-to-end shape of the defect: a fetched window, then a live bar.
+  it('replays a real study onto the bar times it was computed for', async () => {
+    // The end-to-end shape of the defect: a computed window, then a live bar.
     const times = candleTimesMs(4)
-    const payload = {
-      candles: times.map(time => ({ time: time / 1000 })),
-      plots: [{ name: 'EMA', type: 'line', data: [10, 20, 30, 40] }]
-    }
-    const built = await withPreview(payload, () => plots.resolveCustomIndicators({
-      indicators: [{ indicatorId: 9, name: 'EMA' }],
-      market: 'Crypto',
-      symbol: 'BTC/USDT',
-      timeframe: '1H',
-      cache: plots.createSeriesCache()
-    }))
+    const built = await withStudy({
+      candles: candleRows(times),
+      plots: {
+        plots: [{ name: 'EMA', type: 'line', overlay: true, data: [10, 20, 30, 40] }],
+        signals: [],
+        candleTimes: times
+      },
+      run: () => plots.resolveCustomIndicators({
+        indicators: [{ indicatorId: 9, name: 'EMA', code: '//@version=5\nindicator("e")\nplot(close)' }],
+        market: 'Crypto',
+        symbol: 'BTC/USDT',
+        timeframe: '1H',
+        cache: plots.createSeriesCache()
+      })
+    })
     const instance = new built.indicators[0].constructor()
     assert.deepEqual(times.map(time => instance.main(ctxAt(time))[0]), [10, 20, 30, 40])
-    // The forming candle the socket pushed: no precomputed value exists yet.
+    // The forming candle the socket pushed: no computed value exists yet.
     assert.ok(Number.isNaN(instance.main(ctxAt(times[3] + HOUR))[0]))
     // Older bar loaded by a scroll-back: also outside the computed window.
     assert.ok(Number.isNaN(instance.main(ctxAt(times[0] - HOUR))[0]))
-    // And neither of those disturbed the bars that were fetched.
+    // And neither of those disturbed the bars that were computed.
     assert.deepEqual(times.map(time => instance.main(ctxAt(time))[0]), [10, 20, 30, 40])
   })
 })
@@ -556,7 +714,7 @@ describe('replay design', () => {
   it('indexes the plots against the candle times the preview returned', () => {
     // `candleTimes` used to be fetched and then ignored, which is what made an
     // ordinal replay the only option.
-    assert.match(source, /candleTimes: \(payload\.candles \|\| \[\]\)/)
+    assert.match(source, /candleTimes: result\.candleTimes/)
     assert.match(source, /buildBarTimeIndex\(\{ plotSpecs, candleTimes \}\)/)
     assert.match(source, /candleTimes: loaded\?\.candleTimes/)
   })

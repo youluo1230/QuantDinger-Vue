@@ -316,7 +316,7 @@ export default {
             indicators: this.activeIndicators.map(item => ({
               id: String(item.indicatorId),
               instanceId: String(item.indicatorId),
-              type: 'python',
+              type: 'pine',
               name: item.name || '',
               params: item.params || {},
               visible: true

@@ -1,26 +1,89 @@
 /**
- * Draw backend-computed indicator output on the Charting Library.
+ * Draw Pine indicator output on the Charting Library.
  *
- * The indicators the user saves in the Indicator IDE are Python: they run in the
- * backend sandbox and return `plots`/`signals` aligned to the bars they were
- * given. The library cannot run Python, and it will not accept a bare array of
- * numbers, so the output has to be replayed through its custom-indicator API:
- * a study whose `main` is called once per bar, returning the precomputed value
- * for that bar.
+ * The indicators the user saves in the Indicator IDE are Pine Script, and the
+ * script itself is what the frontend holds: the runtime evaluates it in this
+ * process and the resulting series are handed to the library's custom-indicator
+ * API. The library cannot run Pine and will not accept a bare array of numbers,
+ * so a study's `main` is called once per bar and returns the value computed for
+ * that bar's time.
  *
- * That is the whole design: `loadSeries` fetches the preview once and the study
- * looks each bar up by its time. Nothing is calculated in the browser.
+ * Two halves, deliberately separated:
+ *
+ * 1. `pineRuntime.js` runs the script over the chart's own bars and returns
+ *    drawable plots. That is where all the arithmetic happens.
+ * 2. This module indexes those plots by bar time and replays them through the
+ *    study contract.
  *
  * Replaying by ordinal position cannot work. The library appends live bars and
  * prepends older ones while the same study instance keeps being called, so a
  * self-incrementing cursor drifts: one extra call at the end of the array makes
- * `main` index past it, and a scroll-back replays the fetched window against a
+ * `main` index past it, and a scroll-back replays the computed window against a
  * bar sequence that no longer starts where the cursor does. Bar time is the only
  * stable key, and the library does hand it over -- see `barTimeCandidates` and
  * `buildBarTimeIndex`.
  */
 
 import request from '@/utils/request'
+import {
+  DEFAULT_STUDY_BARS,
+  MAX_STUDY_BARS,
+  runPineStudy,
+  toPineBar
+} from './pineRuntime'
+
+/**
+ * Timeframe name -> the period token PineTS expects.
+ *
+ * Pine scripts branch on `timeframe.period` and on `timeframe.in_seconds()`, so
+ * this must be the venue's own vocabulary rather than an arbitrary label. The
+ * same table exists in `datafeed.js` for the bar endpoint; it is repeated here
+ * because the two answer different questions (which bars to fetch, versus which
+ * period to declare to the script) and a shared constant would invite someone
+ * to "fix" one and change the other.
+ */
+const PINE_INTERVALS = {
+  '1m': '1',
+  '3m': '3',
+  '5m': '5',
+  '15m': '15',
+  '30m': '30',
+  '1H': '60',
+  '4H': '240',
+  '1D': '1D',
+  '1W': '1W'
+}
+
+/**
+ * The period token for a timeframe, defaulting to the raw value.
+ *
+ * A timeframe the table does not name is passed through unchanged: an
+ * unsupported period is the script's business to complain about, and inventing
+ * one here would hide its error message.
+ */
+export function pineIntervalFor (timeframe) {
+  const raw = String(timeframe || '').trim()
+  return PINE_INTERVALS[raw] || raw || '1'
+}
+
+/**
+ * The reverse of {@link pineIntervalFor}: a Pine period token back to the
+ * vocabulary the bar endpoint expects.
+ *
+ * `request.security` names its timeframe the Pine way (`"60"`, `"1D"`), and the
+ * candles endpoint does not know those tokens, so a script reading another
+ * timeframe would otherwise ask for bars it never receives and draw `na`.
+ * A token the table does not name is passed through and left for the endpoint
+ * to reject -- with its own message, which is the useful one.
+ */
+export function timeframeForPineInterval (interval) {
+  const raw = String(interval || '').trim()
+  if (!raw) return ''
+  for (const [timeframe, token] of Object.entries(PINE_INTERVALS)) {
+    if (token === raw) return timeframe
+  }
+  return raw
+}
 
 /** Milliseconds in a UTC day; the bucket a daily-or-larger bar is keyed by. */
 const MS_PER_DAY = 86400000
@@ -92,7 +155,9 @@ export function buildBarTimeIndex ({ plotSpecs, candleTimes }) {
     // A repeated bar time is one bar; the first occurrence owns the slot, so a
     // duplicate cannot overwrite an already-correct value.
     if (byTime.has(pair.time)) continue
-    byTime.set(pair.time, specs.map(spec => plotValueAt(spec, pair.position)))
+    // Flattened: a candle plot answers with four values, so a spec cannot be
+    // assumed to contribute exactly one entry to the row `main` must return.
+    byTime.set(pair.time, specs.flatMap(spec => [].concat(plotValueAt(spec, pair.position))))
   }
 
   const byDay = new Map()
@@ -117,8 +182,21 @@ export function buildBarTimeIndex ({ plotSpecs, candleTimes }) {
   }
 }
 
-/** One plot's value at a bar position, with anything missing reduced to a gap. */
+/**
+ * One plot's output at a bar position, with anything missing reduced to a gap.
+ *
+ * A candle plot is declared to the library as four separate plots, and each of
+ * them is read here through the side it was declared for, so the value that
+ * reaches a plot is the price that plot asked for rather than the whole candle.
+ */
 function plotValueAt (spec, position) {
+  if (spec && spec.candle) {
+    const candle = Array.isArray(spec.candle) ? spec.candle[position] : null
+    if (!candle) return NaN
+    const price = candle[spec.side === 'ohlc_high' ? 'high' : spec.side === 'ohlc_low' ? 'low' : spec.side === 'ohlc_close' ? 'close' : 'open']
+    const value = Number(price)
+    return Number.isFinite(value) ? value : NaN
+  }
   const values = Array.isArray(spec?.values) ? spec.values : []
   const value = values[position]
   return Number.isFinite(value) ? value : NaN
@@ -214,52 +292,118 @@ export function indicatorIdOf (item) {
 }
 
 /**
- * Fetch one indicator's computed output for a chart window.
+ * Fetch the bars a study runs over.
  *
- * Returns `{ plots, signals }` with each plot flattened to plain numbers, which
- * is what the study can replay. Plot objects that carry per-point colours keep
- * their colour arrays alongside, because the library colours a series per bar
- * and taking only the values would silently drop the author's intent.
+ * This is the same history the chart itself loads, from the same endpoint: a
+ * study computed against bars the chart is not showing would draw its line
+ * against the wrong candles. The response is asked for in the units `toPineBar`
+ * accepts and handed straight to the runtime.
  */
-export async function loadSeries ({ indicatorId, market, symbol, timeframe, limit = 300, params = {}, code = '', name = '' }) {
+export async function loadStudyBars ({ market, symbol, timeframe, limit, exchangeId = '', marketType = '', instrumentId = '' }) {
   const response = await request({
-    url: '/api/indicator/chart-preview',
-    method: 'post',
-    data: {
-      indicator_id: indicatorId,
+    url: '/api/market-data/candles',
+    method: 'get',
+    params: {
       market,
       symbol,
       timeframe,
       limit,
-      params,
-      // Unsaved editor text travels with the request. Without it a preview can
-      // only ever show the last saved version, which turns every look at the
-      // chart into a save.
-      ...(code && String(code).trim() ? { code, name } : {})
+      ...(exchangeId ? { exchange_id: exchangeId } : {}),
+      ...(marketType ? { market_type: marketType } : {}),
+      ...(instrumentId ? { instrument_id: instrumentId } : {})
     },
-    timeout: 60000
+    timeout: 45000
   })
-  const payload = response?.data
-  if (!payload) {
-    throw new Error(response?.msg || 'Indicator preview returned nothing')
+  const rows = Array.isArray(response?.data) ? response.data : []
+  return rows.map(toPineBar).filter(Boolean)
+}
+
+/**
+ * Compile and run one Pine indicator against a chart window.
+ *
+ * Returns `{ plots, signals, candleTimes }` in the same shape the backend
+ * preview used to return, so the study builder downstream is unchanged. The
+ * work happens here rather than in the backend sandbox: the editor buffer is
+ * what the author is looking at, and a round trip per keystroke-sized edit is
+ * exactly what made the chart feel slow.
+ *
+ * `indicatorId` is carried for the caller's cache key and error reporting; the
+ * script itself is the only thing executed, which is why an unsaved buffer
+ * needs no saved row to draw.
+ */
+export async function loadSeries ({
+  indicatorId,
+  market,
+  symbol,
+  timeframe,
+  limit = DEFAULT_STUDY_BARS,
+  params = {},
+  code = '',
+  name = '',
+  exchangeId = '',
+  marketType = '',
+  instrumentId = ''
+}) {
+  const source = String(code || '')
+  if (!source.trim()) {
+    throw new Error(`${name || `Indicator ${indicatorId}`} has no Pine source to run`)
   }
+  const bars = await loadStudyBars({
+    market,
+    symbol,
+    timeframe,
+    limit: Math.min(Number(limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS),
+    exchangeId,
+    marketType,
+    instrumentId
+  })
+  if (!bars.length) {
+    throw new Error(`No bars for ${symbol} ${timeframe}`)
+  }
+  // `params` are the values of the inputs the script declares; the runtime
+  // applies them as overrides, so the study matches the settings panel instead
+  // of always running the script's own defaults.
+  //
+  // `loadBars` is what makes `request.security` work: the script may read a
+  // timeframe the chart is not on, and the runtime asks this loader for those
+  // bars instead of going without them.
+  const result = await runPineStudy({
+    code: source,
+    bars,
+    symbol,
+    timeframe,
+    interval: pineIntervalFor(timeframe),
+    params,
+    loadBars: ({ timeframe: requested }) => loadStudyBars({
+      market,
+      symbol,
+      // The runtime names timeframes the Pine way; the endpoint names them the
+      // chart way, so the token is translated before the request is built.
+      timeframe: timeframeForPineInterval(requested),
+      limit: Math.min(Number(limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS),
+      exchangeId,
+      marketType,
+      instrumentId
+    })
+  })
   return {
-    plots: normalizePlots(payload.plots),
-    signals: Array.isArray(payload.signals) ? payload.signals : [],
-    // Normalised to milliseconds here, at the boundary, so everything downstream
-    // speaks the library's unit. The API sends seconds (the preview route
-    // divides by 1000 before serialising), and a cache entry that kept them
-    // would be indistinguishable from one that did not.
-    candleTimes: (payload.candles || []).map(bar => barTimeMs(bar?.time)).filter(time => time != null)
+    plots: normalizePlots(result.plots),
+    signals: Array.isArray(result.signals) ? result.signals : [],
+    // Already in milliseconds: `toPineBar` normalised them on the way in, so
+    // there is no second conversion to get wrong.
+    candleTimes: result.candleTimes
   }
 }
 
 /**
- * Turn backend plots into replayable series.
+ * Turn run output into replayable series.
  *
  * A plot point is either a number or `{value, color, size}`; clouds carry
- * `upper`/`lower`. Every form is reduced to the numeric channel the study can
- * plot, and the parallel colour channel is kept where it exists.
+ * `upper`/`lower`; markers carry booleans; candles carry four prices. Every
+ * form is reduced to the channels the study can return, and the plot's drawing
+ * metadata (style, shape, location, palette colour) is kept because the study's
+ * metainfo is built from it -- a marker that loses its shape is a different
+ * indicator on screen.
  */
 export function normalizePlots (plots) {
   if (!Array.isArray(plots)) return []
@@ -274,15 +418,110 @@ export function normalizePlots (plots) {
       out.push({ kind: 'cloud', name, upper: channel(plot, 'upper'), lower: channel(plot, 'lower') })
       continue
     }
+    const kind = plotKindOf(plot)
+    if (kind === 'shape' || kind === 'char') {
+      out.push({
+        kind,
+        name,
+        values: markerChannel(plot),
+        shape: String(plot.shape || ''),
+        char: String(plot.char || ''),
+        location: String(plot.location || ''),
+        color: String(plot.color || ''),
+        textColor: String(plot.textColor || ''),
+        text: String(plot.text || ''),
+        overlay: plot.overlay !== false
+      })
+      continue
+    }
+    if (kind === 'candle') {
+      out.push({
+        kind,
+        name,
+        candles: candleChannel(plot),
+        color: String(plot.color || ''),
+        overlay: plot.overlay !== false
+      })
+      continue
+    }
+    if (kind === 'barcolor' || kind === 'bgcolor') {
+      const colors = normaliseColours(plot)
+      out.push({ kind, name, colors, overlay: plot.overlay !== false })
+      continue
+    }
+    if (kind === 'fill') {
+      const plot1 = String(plot.plot1 || '').trim()
+      const plot2 = String(plot.plot2 || '').trim()
+      if (!plot1 || !plot2) continue
+      out.push({ kind, name, plot1, plot2, color: String(plot.color || '') })
+      continue
+    }
     out.push({
-      kind: String(plot.type || 'line') === 'bar' ? 'bar' : 'line',
+      kind: kind === 'bar' ? 'bar' : 'line',
       name,
       values: channel(plot, 'value'),
       colors: colourChannel(plot),
+      // The line's visual style travels with it: a histogram and a stepline are
+      // the same numbers drawn in ways that mean different things.
+      style: plot.style && typeof plot.style === 'object' ? plot.style : null,
       overlay: plot.overlay !== false
     })
   }
   return out
+}
+
+/**
+ * Which drawing a plot describes.
+ *
+ * A plot without a `kind` is an older payload and is read the way it always
+ * was: `type` decides bar versus line, and a point shaped like a cloud makes a
+ * cloud. The explicit kinds come from the Pine runtime, which knows exactly
+ * which drawing call produced each series.
+ */
+function plotKindOf (plot) {
+  const kind = String(plot.kind || '').toLowerCase()
+  if (kind) return kind
+  return String(plot.type || 'line') === 'bar' ? 'bar' : 'line'
+}
+
+/** Marker rows are booleans: true draws, anything else is a gap. */
+function markerChannel (plot) {
+  const values = channel(plot, 'value')
+  const data = Array.isArray(plot.data) ? plot.data : []
+  return values.map((value, index) => {
+    if (value == null) return null
+    // Some producers emit the marker as a boolean, others as 1/0.
+    const raw = data[index]
+    if (raw === true) return 1
+    if (raw === false) return null
+    return value ? 1 : null
+  })
+}
+
+/** A candle channel: four prices per bar, or a gap. */
+function candleChannel (plot) {
+  const data = Array.isArray(plot.data) ? plot.data : []
+  return data.map((point) => {
+    if (!point || typeof point !== 'object') return null
+    const open = Number(point.open)
+    const high = Number(point.high)
+    const low = Number(point.low)
+    const close = Number(point.close)
+    if (![open, high, low, close].every(Number.isFinite)) return null
+    return { open, high, low, close }
+  })
+}
+
+/** Per-bar colours, already reduced to a colour string or null. */
+function normaliseColours (plot) {
+  const given = Array.isArray(plot.colors) ? plot.colors : []
+  if (given.length) return given.map(colour => (colour ? String(colour) : null))
+  const data = Array.isArray(plot.data) ? plot.data : []
+  return data.map((point) => {
+    if (!point || typeof point !== 'object') return null
+    const colour = point.color
+    return colour ? String(colour) : null
+  })
 }
 
 function isCloud (plot) {
@@ -348,17 +587,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
   const label = String(name || `Indicator ${indicatorId}`)
   const primary = series.find(plot => plot.overlay) || series[0]
   const overlaysPrice = Boolean(primary && primary.overlay !== false)
-  // The library sizes its plot table from metainfo, so a cloud contributes two
-  // entries: its upper edge and its lower edge are separate plots to it.
-  const plotSpecs = []
-  for (const plot of series) {
-    if (plot.kind === 'cloud') {
-      plotSpecs.push({ name: `${plot.name} upper`, values: plot.upper })
-      plotSpecs.push({ name: `${plot.name} lower`, values: plot.lower })
-      continue
-    }
-    plotSpecs.push({ name: plot.name, values: plot.values })
-  }
+  const layout = buildPlotLayout(series)
 
   const metainfo = {
     id: `qd_indicator_${indicatorId}`,
@@ -369,18 +598,18 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     // its own, which is what the pane placement in the indicator output means.
     overlay: overlaysPrice,
     is_price_study: overlaysPrice,
-    plots: plotSpecs.map((_plot, index) => ({
-      id: `plot_${index}`,
-      type: 'line'
-    })),
-    defaults: { styles: {} },
-    inputs: []
+    plots: layout.plots,
+    defaults: layout.defaults,
+    styles: layout.styles,
+    inputs: [],
+    ...layout.extra
   }
 
   // Built once, not per `init`: the precomputed output never changes, so the
   // lookup is immutable. That is also why there is no `init` below.
+  const plotSpecs = layout.specs
   const barIndex = buildBarTimeIndex({ plotSpecs, candleTimes })
-  const gapRow = plotSpecs.map(() => NaN)
+  const gapRow = layout.plots.map(() => NaN)
 
   function Study () {}
   /**
@@ -424,6 +653,235 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
 }
 
 /**
+ * The plot table, styles and extra metainfo sections a set of series needs.
+ *
+ * Every drawing kind the Pine runtime can produce maps to a different part of
+ * the custom-study contract, and the library sizes its output from `plots`:
+ * a study that declares one line but returns four candle values draws one of
+ * them and silently drops the rest. So the table is derived from the series
+ * rather than being a fixed line per plot.
+ *
+ * `specs` is the parallel list the bar index reads, kept aligned with `plots`
+ * so a returned value lands on the plot that declared it. A candle spec expands
+ * into four consecutive entries because the library declares an OHLC plot as
+ * four targeted plots and expects one value per plot.
+ */
+function buildPlotLayout (series) {
+  const plots = []
+  const specs = []
+  const styles = {}
+  const defaults = { styles: {}, inputs: {} }
+  const extra = {}
+  // Fills name the plot titles the script declared, so the layout tracks the
+  // title-to-plot-id map as it builds the table.
+  const idByTitle = new Map()
+  let fills = 0
+  let candleIndex = 0
+  let paletteIndex = 0
+
+  for (const plot of series || []) {
+    if (!plot || typeof plot !== 'object') continue
+    const plotId = `plot_${plots.length}`
+    const label = String(plot.name || `Plot ${plots.length}`)
+
+    if (plot.kind === 'cloud') {
+      // A cloud is two lines plus the band between them: the library fills
+      // between plot ids, never between channels of one plot.
+      const lowerId = `plot_${plots.length + 1}`
+      plots.push({ id: plotId, type: 'line' })
+      specs.push({ values: plot.upper })
+      plots.push({ id: lowerId, type: 'line' })
+      specs.push({ values: plot.lower })
+      styles[plotId] = { title: `${label} upper` }
+      styles[lowerId] = { title: `${label} lower` }
+      const fillId = `fill_${fills}`
+      fills += 1
+      extra.filledAreas = extra.filledAreas || []
+      extra.filledAreas.push({
+        id: fillId,
+        objAId: plotId,
+        objBId: lowerId,
+        type: 'plot_plot',
+        title: label
+      })
+      defaults.filledAreasStyle = defaults.filledAreasStyle || {}
+      defaults.filledAreasStyle[fillId] = {
+        visible: true,
+        transparency: 80,
+        color: plot.fillColor || plot.color || '#2962FF'
+      }
+      continue
+    }
+
+    if (plot.kind === 'fill') {
+      const upper = idByTitle.get(String(plot.plot1 || '').trim())
+      const lower = idByTitle.get(String(plot.plot2 || '').trim())
+      // A fill names two plots it shades. If either was never declared the band
+      // cannot exist; dropping it is honest, inventing one is not.
+      if (!upper || !lower) continue
+      const fillId = `fill_${fills}`
+      fills += 1
+      extra.filledAreas = extra.filledAreas || []
+      extra.filledAreas.push({
+        id: fillId,
+        objAId: upper,
+        objBId: lower,
+        type: 'plot_plot',
+        title: label
+      })
+      defaults.filledAreasStyle = defaults.filledAreasStyle || {}
+      defaults.filledAreasStyle[fillId] = {
+        visible: true,
+        // Pine's `color.new(colour, 80)` already carries its alpha in the colour
+        // string, and the fill keeps it in the bar data; asking the library to
+        // add transparency on top would double it.
+        transparency: 0,
+        color: plot.color || '#2962FF'
+      }
+      continue
+    }
+
+    if (plot.kind === 'candle') {
+      // Four targeted plots plus one OHLC meta plot. `main` returns these four
+      // values in declaration order, which is why the spec expands here rather
+      // than at read time.
+      const target = `plotcandle_${candleIndex}`
+      candleIndex += 1
+      for (const side of ['ohlc_open', 'ohlc_high', 'ohlc_low', 'ohlc_close']) {
+        plots.push({ id: `plot_${plots.length}`, type: side, target })
+        specs.push({ candle: plot.candles, side })
+      }
+      extra.ohlcPlots = extra.ohlcPlots || {}
+      extra.ohlcPlots[target] = { title: label, isHidden: false }
+      defaults.ohlcPlots = defaults.ohlcPlots || {}
+      defaults.ohlcPlots[target] = {
+        plottype: 'ohlc_candles',
+        color: plot.color || '#2196F3',
+        wickColor: plot.color || '#2196F3',
+        borderColor: plot.color || '#2196F3',
+        drawWick: true,
+        drawBorder: false,
+        visible: true
+      }
+      idByTitle.set(label, `plot_${plots.length - 4}`)
+      continue
+    }
+
+    if (plot.kind === 'shape' || plot.kind === 'char') {
+      const isShape = plot.kind === 'shape'
+      const shape = normaliseShape(isShape, plot.shape, plot.char)
+      const location = normaliseLocation(plot.location)
+      plots.push({ id: plotId, type: isShape ? 'shapes' : 'chars' })
+      specs.push({ values: plot.values })
+      styles[plotId] = {
+        title: label,
+        location,
+        ...(plot.text ? { text: plot.text } : {}),
+        ...(isShape ? {} : { char: shape.char })
+      }
+      defaults.styles[plotId] = {
+        visible: true,
+        plottype: shape.plottype,
+        location,
+        color: plot.color || '#2196F3',
+        textColor: plot.textColor || '#FFFFFF'
+      }
+      idByTitle.set(label, plotId)
+      continue
+    }
+
+    if (plot.kind === 'barcolor' || plot.kind === 'bgcolor') {
+      // Colour-only: a palette plot whose returned value selects a colour. The
+      // palette is built from the colours the script actually used, so a script
+      // that paints two states gets two palette entries rather than a fixed set.
+      const palette = `palette_${paletteIndex}`
+      paletteIndex += 1
+      const colours = []
+      for (const colour of plot.colors || []) {
+        if (!colour || colours.includes(colour)) continue
+        colours.push(colour)
+      }
+      if (!colours.length) continue
+      // `valToIndex` maps the value `main` returns to a palette entry. The value
+      // is 1-based so a bar the script left uncoloured can be a gap (NaN)
+      // instead of sharing index 0 with the first real colour.
+      const valToIndex = {}
+      colours.forEach((_colour, colourIndex) => { valToIndex[colourIndex + 1] = colourIndex })
+      plots.push({ id: plotId, type: plot.kind === 'barcolor' ? 'bar_colorer' : 'bg_colorer', palette })
+      specs.push({
+        values: (plot.colors || []).map(colour => (colour ? colours.indexOf(colour) + 1 : NaN))
+      })
+      extra.palettes = extra.palettes || {}
+      extra.palettes[palette] = {
+        colors: colours.map((_colour, colourIndex) => ({ name: `Colour ${colourIndex + 1}` })),
+        valToIndex
+      }
+      defaults.palettes = defaults.palettes || {}
+      defaults.palettes[palette] = {
+        colors: colours.reduce((acc, colour, colourIndex) => {
+          acc[colourIndex] = { color: colour }
+          return acc
+        }, {})
+      }
+      styles[plotId] = { title: label }
+      idByTitle.set(label, plotId)
+      continue
+    }
+
+    plots.push({ id: plotId, type: 'line' })
+    specs.push({ values: plot.values })
+    styles[plotId] = { title: label }
+    defaults.styles[plotId] = {
+      visible: true,
+      ...(plot.style ? { ...plot.style } : { plottype: 0 }),
+      color: plot.color || '#2962FF',
+      linewidth: 1
+    }
+    idByTitle.set(label, plotId)
+  }
+
+  return { plots, specs, styles, defaults, extra }
+}
+
+/**
+ * A Pine shape token as the library's `plottype`, falling back to a circle.
+ *
+ * The two vocabularies are nearly identical (`shape_triangle_up` on both sides)
+ * but not entirely: Pine's `style_arrowup`/`style_arrowdown` map to the
+ * library's `shape_arrow_up`/`shape_arrow_down`, and anything unrecognised must
+ * still draw something rather than being dropped.
+ */
+function normaliseShape (isShape, shape, char) {
+  const token = String(shape || '').trim()
+  const alias = {
+    style_arrowup: 'shape_arrow_up',
+    style_arrowdown: 'shape_arrow_down',
+    style_circle: 'shape_circle',
+    style_square: 'shape_square',
+    style_diamond: 'shape_diamond',
+    style_flag: 'shape_flag',
+    style_xcross: 'shape_xcross',
+    style_triangleup: 'shape_triangle_up',
+    style_triangledown: 'shape_triangle_down'
+  }
+  if (!isShape) return { char: String(char || 'X') }
+  return { plottype: alias[token] || (token.startsWith('shape_') ? token : 'shape_circle') }
+}
+
+/**
+ * A Pine location token as the library's `MarkLocation`.
+ *
+ * The vocabularies match exactly; the fallback is the side the shape itself
+ * implies, because a marker with no location renders at the price level and
+ * would read as a different signal.
+ */
+function normaliseLocation (location) {
+  const token = String(location || '').trim()
+  const allowed = ['AboveBar', 'BelowBar', 'Top', 'Bottom', 'Right', 'Left', 'Absolute', 'AbsoluteUp', 'AbsoluteDown']
+  return allowed.includes(token) ? token : 'AboveBar'
+}
+
+/**
  * Resolve a set of custom indicators for a chart, loading what is missing.
  *
  * Called from `custom_indicators_getter`, which must return a promise; the
@@ -435,7 +893,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
  * ordered list with no way back to the bars they belong to; see
  * `buildBarTimeIndex`.
  */
-export async function resolveCustomIndicators ({ indicators, market, symbol, timeframe, cache }) {
+export async function resolveCustomIndicators ({ indicators, market, symbol, timeframe, cache, exchangeId = '', marketType = '', instrumentId = '' }) {
   const built = []
   const failures = []
   for (const indicator of indicators || []) {
@@ -458,15 +916,18 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
           market,
           symbol,
           timeframe,
-          limit: indicator.limit || 300,
+          limit: indicator.limit || DEFAULT_STUDY_BARS,
           params: indicator.params || {},
           code: inlineCode,
-          name: indicator.name || indicator.display_name || ''
+          name: indicator.name || indicator.display_name || '',
+          exchangeId,
+          marketType,
+          instrumentId
         })
       } catch (err) {
-        // One indicator that fails to compute -- a runtime error in its Python,
-        // or a symbol it has no data for -- must not take the chart down with
-        // it. The library draws the bars and simply omits this study.
+        // One indicator that fails to run -- a Pine error, or a symbol it has
+        // no data for -- must not take the chart down with it. The library
+        // draws the bars and simply omits this study.
         failures.push({ indicatorId, reason: err?.message || String(err) })
         continue
       }

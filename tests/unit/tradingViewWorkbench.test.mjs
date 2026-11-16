@@ -77,17 +77,24 @@ test('the chart workspace is reachable from the sidebar, next to Indicators', ()
   )
 })
 
-test('the IDE surface draws every checked indicator, not just the edited one', () => {
+test('the IDE draws every checked indicator in every pane, not just the edited one', () => {
   const ide = read('src/views/indicator-ide/index.vue')
 
-  // The bundled canvas draws whatever is checked in the indicator dropdown, so
-  // switching renderer must not silently drop the comparisons the author set up.
-  const fn = ide.slice(ide.indexOf('tvDraftIndicators ()'), ide.indexOf('tvDraftSymbol ()'))
+  // There is one renderer now, and the checked set is what it draws. A pane is
+  // passed in rather than reading the active one, because a second renderer is
+  // no longer available to fall back to when the layout is split.
+  const fn = ide.slice(ide.indexOf('tvPaneIndicators (pane)'), ide.indexOf('activeChartPane ()'))
   assert.match(fn, /chartVisibleIndicatorIds/)
+  assert.match(fn, /pane\.visibleIndicatorIds/)
   assert.match(fn, /const studies = \[\]/)
   // The row under edit comes from the editor buffer; the rest come from storage.
   assert.match(fn, /id === editingId && String\(liveCode \|\| ''\)\.trim\(\)/)
   assert.match(fn, /this\.getIndicatorExecutableCode\(indicator\)/)
   // An unsaved script still has to be drawable.
   assert.match(fn, /!editingId && String\(liveCode \|\| ''\)\.trim\(\)/)
+  // A stopped pane draws nothing; the run toggle is per pane.
+  assert.match(fn, /if \(!running\) return \[\]/)
+  // Every visible pane mounts the same component.
+  assert.match(ide, /:indicators="tvPaneIndicators\(pane\)"/)
+  assert.doesNotMatch(ide, /<kline-chart/)
 })

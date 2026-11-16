@@ -393,18 +393,6 @@
                           </a-button>
                         </span>
                       </a-tooltip>
-                      <a-tooltip :title="$t('indicatorIde.chartSurface.hint')">
-                        <a-button
-                          size="small"
-                          class="chart-panel-action-btn chart-panel-surface-btn"
-                          :type="chartSurface === 'tradingview' ? 'primary' : 'default'"
-                          :aria-label="$t('indicatorIde.chartSurface.hint')"
-                          @click="toggleChartSurface"
-                        >
-                          <a-icon type="fund" />
-                          <span>{{ chartSurface === 'tradingview' ? $t('indicatorIde.chartSurface.tv') : $t('indicatorIde.chartSurface.local') }}</span>
-                        </a-button>
-                      </a-tooltip>
                       <a-tooltip :title="chartFullscreen ? $t('indicatorIde.exitFullscreen') : $t('indicatorIde.fullscreenChart')">
                         <a-button
                           size="small"
@@ -544,30 +532,6 @@
                         </a-menu>
                       </a-dropdown>
                     </div>
-                    <div class="ide-toolbar-group ide-toolbar-group--preset-indicator">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.indicator') }}</span>
-                      <a-dropdown
-                        :trigger="['click']"
-                        placement="bottomLeft"
-                        :get-popup-container="chartToolbarGetPopupContainer"
-                        :overlay-class-name="isDarkTheme ? 'ide-preset-indicator-dropdown ide-preset-indicator-dropdown--dark' : 'ide-preset-indicator-dropdown'"
-                        @visibleChange="syncChartPresetIndicatorOptions"
-                      >
-                        <a-button size="small" class="ide-preset-indicator-trigger">
-                          <a-icon type="plus" />
-                          <span>{{ $t('indicatorIde.toolbar.indicator') }}</span>
-                          <a-icon type="down" />
-                        </a-button>
-                        <a-menu slot="overlay" @click="onChartPresetIndicatorClick">
-                          <a-menu-item v-for="option in chartPresetIndicatorOptions" :key="option.id">
-                            <span class="ide-chart-preset-menu-item">
-                              <span>{{ option.name }}</span>
-                              <a-icon v-if="isChartPresetIndicatorActive(option.id)" type="check" />
-                            </span>
-                          </a-menu-item>
-                        </a-menu>
-                      </a-dropdown>
-                    </div>
                     <div class="ide-toolbar-group ide-toolbar-group--tf">
                       <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.timeframe') }}</span>
                       <a-radio-group
@@ -675,26 +639,12 @@
                           {{ String(pane.exchangeId || '').toUpperCase() }} · {{ $t(pane.marketType === 'swap' ? 'marketContext.swap' : 'marketContext.spot') }}
                         </span>
                         <span class="ide-chart-pane-timeframe">{{ pane.timeframe }}</span>
-                        <span v-if="pane.activeIndicators && pane.activeIndicators.length" class="ide-chart-pane-indicators">
-                          {{ $t('indicatorIde.multiChart.indicatorCount', { n: pane.activeIndicators.length }) }}
+                        <span v-if="paneIndicatorCount(pane)" class="ide-chart-pane-indicators">
+                          {{ $t('indicatorIde.multiChart.indicatorCount', { n: paneIndicatorCount(pane) }) }}
                         </span>
                       </button>
                       <div class="ide-chart-pane-body">
                         <trading-view-chart
-                          v-if="chartSurface === 'tradingview' && pane.id === activeChartPaneId"
-                          :key="`tv-${pane.id}-${tvDraftSymbol}-${tvDraftTimeframe}`"
-                          :symbol="tvDraftSymbol"
-                          :market="tvDraftMarket"
-                          :exchange-id="pane.market === 'Crypto' ? pane.exchangeId : ''"
-                          :market-type="pane.market === 'Crypto' ? pane.marketType : 'spot'"
-                          :instrument-id="pane.market === 'Crypto' ? pane.instrumentId : ''"
-                          :timeframe="tvDraftTimeframe"
-                          :theme="chartTheme"
-                          :indicators="tvDraftIndicators"
-                          @indicator-error="handleTvIndicatorError"
-                        />
-                        <kline-chart
-                          v-else
                           :ref="chartPaneRefName(pane.id)"
                           :symbol="pane.symbol"
                           :market="pane.market"
@@ -704,12 +654,9 @@
                           :timeframe="pane.timeframe"
                           :theme="chartTheme"
                           :candle-type="pane.candleType"
-                          :activeIndicators="pane.activeIndicators"
+                          :indicators="tvPaneIndicators(pane)"
                           :quick-trade-positions="pane.id === activeChartPaneId ? quickTradeChartPositions : []"
-                          :show-indicator-library-trigger="false"
-                          :userId="userId"
-                          :realtime-enabled="Boolean(pane.symbol)"
-                          @indicator-toggle="payload => handlePaneIndicatorToggle(pane.id, payload)"
+                          @indicator-error="handleTvIndicatorError"
                           @price-change="payload => handlePanePriceChange(pane.id, payload)"
                         />
                       </div>
@@ -1281,8 +1228,9 @@
 
 <script>
 import CodeMirror from 'codemirror'
+import { definePineMode } from '@/charting/pineMode'
+import { applyPineInputValues, parsePineInputDefaults, parsePineInputSpecs } from '@/charting/pineInputs'
 import 'codemirror/lib/codemirror.css'
-import 'codemirror/mode/python/python'
 import 'codemirror/theme/monokai.css'
 import 'codemirror/theme/eclipse.css'
 import 'codemirror/addon/edit/closebrackets'
@@ -1308,7 +1256,6 @@ import { extractIndicatorSignalLabels } from '@/utils/indicatorSignalOptions'
 import { renderSafeMarkdown } from '@/utils/safeMarkdown'
 import { clampFloatingPanelPosition, snapFloatingPanelPosition } from '@/utils/floatingPanel.mjs'
 import { applyCodeEditsToCodeMirror, applyExactCodeEdits, candidateCodeEditOperations, setCodeMirrorValueWithHighlight } from '@/utils/codeEdits'
-import KlineChart from '@/views/indicator-analysis/components/KlineChart.vue'
 import TradingViewChart from '@/components/TradingViewChart/index.vue'
 import QuickTradePanel from '@/components/QuickTradePanel/QuickTradePanel'
 import IndicatorMarketPicker from './components/IndicatorMarketPicker.vue'
@@ -1368,7 +1315,7 @@ const supportedChartTypes = new Set([
 export default {
   name: 'IndicatorIDE',
   mixins: [baseMixin],
-  components: { KlineChart, TradingViewChart, QuickTradePanel, IndicatorMarketPicker, AddWatchlistModal },
+  components: { TradingViewChart, QuickTradePanel, IndicatorMarketPicker, AddWatchlistModal },
   data () {
     return {
       userId: null,
@@ -1376,10 +1323,9 @@ export default {
       loadingIndicators: false,
       selectedIndicatorId: undefined,
       chartVisibleIndicatorIds: [],
-      // Which renderer the chart pane uses. The TradingView surface is the
-      // one an author checks their work on; the bundled canvas stays
-      // available because it is the only one that renders derived candles.
-      chartSurface: 'klinecharts',
+      // The chart pane is TradingView only: it is the surface the Pine study
+      // runs on, and a second renderer that cannot run Pine would show a
+      // different picture for the same script.
       indicatorDropdownVisible: false,
       indicatorMarketVisible: false,
       indicatorsLoadedAt: 0,
@@ -1414,13 +1360,11 @@ export default {
       loadingWatchlist: false,
       selectedWatchlistKey: 'Crypto:BTC/USDT',
 
-      activeIndicators: [],
       chartLayoutMode: 1,
       activeChartPaneId: 'pane-1',
       chartPanes: [],
       chartWorkspaceReady: false,
       applyingChartPaneState: false,
-      chartPresetIndicatorOptions: [],
       chartIndicatorRunning: true,
       quickTradeDrawerVisible: false,
       quickTradeMinimized: false,
@@ -1483,12 +1427,12 @@ export default {
       ideAiTipIndex: 0,
       ideAiTipTimer: null,
       ideAiTips: [
-        'Understanding your intent and mapping it to chart-only indicator logic...',
-        'Periods, thresholds, switches, and visual preferences should be exposed with @param.',
-        'Signals are generated as one-bar events by default so alerts do not repeat.',
-        'Persistent regimes belong in plots, lamp rows, or sparse layers rather than repeated markers.',
+        'Understanding your intent and mapping it to Pine Script...',
+        'Periods, thresholds, and switches should be declared as input.* so they appear in settings.',
+        'Crossover markers are one-bar events by default so alerts do not repeat.',
+        'A continuous band is two plots plus fill(), not a marker per bar.',
         'Indicator code stays visual-only; backtest and live execution belong to Strategy API V2.',
-        'The generated output is checked for length alignment, sandbox safety, and stable pandas usage.'
+        'The generated script is checked for Pine syntax and version before it reaches the chart.'
       ],
       codeQualityHints: [],
       codeQualityLoading: false,
@@ -1619,14 +1563,33 @@ export default {
      * copy: showing the previous version under new code is worse than showing
      * no line at all.
      */
-    tvDraftIndicators () {
-      if (this.chartSurface !== 'tradingview') return []
+    /**
+     * How many indicators this pane is drawing.
+     *
+     * The header label used to count a runtime list that only the bundled
+     * canvas kept; the checked set is now the single source of truth.
+     */
+    paneIndicatorCount (pane) {
+      if (!pane) return 0
+      const ids = pane.id === this.activeChartPaneId ? this.chartVisibleIndicatorIds : pane.visibleIndicatorIds
+      return Array.isArray(ids) ? ids.length : 0
+    },
+    tvPaneIndicators (pane) {
+      // Every pane draws itself now, so the checked set is per-pane. The active
+      // pane is the one the editor is bound to, which is why its list is the
+      // live `chartVisibleIndicatorIds` rather than the stored snapshot.
+      const isActive = !pane || pane.id === this.activeChartPaneId
+      const visibleIds = isActive
+        ? (this.chartVisibleIndicatorIds || [])
+        : (pane.visibleIndicatorIds || [])
+      const running = isActive ? this.chartIndicatorRunning !== false : pane.indicatorRunning !== false
+      if (!running) return []
       const liveCode = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
       const editingId = Number(this.selectedIndicatorId || 0)
       const studies = []
       const seen = new Set()
 
-      for (const rawId of this.chartVisibleIndicatorIds || []) {
+      for (const rawId of visibleIds) {
         const id = Number(rawId)
         if (!id || seen.has(id)) continue
         seen.add(id)
@@ -1649,7 +1612,7 @@ export default {
 
       // An unsaved script has no row to be checked yet, so the buffer itself is
       // the only thing there is to draw.
-      if (!editingId && String(liveCode || '').trim()) {
+      if (isActive && !editingId && String(liveCode || '').trim()) {
         studies.push({
           indicatorId: 0,
           originalId: 0,
@@ -1659,18 +1622,6 @@ export default {
         })
       }
       return studies
-    },
-    tvDraftSymbol () {
-      const active = this.activeChartPane
-      return (active && active.symbol) || ''
-    },
-    tvDraftMarket () {
-      const active = this.activeChartPane
-      return (active && active.market) || 'Crypto'
-    },
-    tvDraftTimeframe () {
-      const active = this.activeChartPane
-      return (active && active.timeframe) || '1H'
     },
     activeChartPane () {
       return (this.chartPanes || []).find(item => item.id === this.activeChartPaneId) || this.chartPanes[0] || null
@@ -1849,7 +1800,6 @@ export default {
       this.clampWorkspaceSplit()
       this.ensureChartReady()
       this.applyIdeOverlayContainers()
-      this.syncChartPresetIndicatorOptions()
     })
   },
   async activated () {
@@ -1915,14 +1865,6 @@ export default {
       const refValue = this.$refs[this.chartPaneRefName(paneId)]
       return Array.isArray(refValue) ? refValue[0] : refValue
     },
-    cloneRuntimeIndicators (items) {
-      if (!Array.isArray(items)) return []
-      return items.filter(Boolean).map(item => ({
-        ...item,
-        params: item.params && typeof item.params === 'object' ? { ...item.params } : {},
-        style: item.style && typeof item.style === 'object' ? { ...item.style } : item.style
-      }))
-    },
     currentChartPaneSnapshot (paneId = this.activeChartPaneId) {
       return {
         id: paneId,
@@ -1939,7 +1881,6 @@ export default {
         availableMarketTypes: Array.isArray(this.availableCryptoMarketTypes) ? [...this.availableCryptoMarketTypes] : ['spot'],
         timeframe: this.timeframe,
         candleType: this.chartCandleType,
-        activeIndicators: this.cloneRuntimeIndicators(this.activeIndicators),
         visibleIndicatorIds: [...(this.chartVisibleIndicatorIds || [])],
         indicatorRunning: this.chartIndicatorRunning !== false
       }
@@ -1953,39 +1894,12 @@ export default {
       base.visibleIndicatorIds = Array.isArray(source.visibleIndicatorIds)
         ? source.visibleIndicatorIds.map(Number).filter(id => !isNaN(id))
         : [...(base.visibleIndicatorIds || [])]
-      base.activeIndicators = this.hydrateChartPaneIndicators(
-        Array.isArray(source.activeIndicators) ? source.activeIndicators : base.activeIndicators,
-        base.visibleIndicatorIds,
-        paneId
-      )
       return base
-    },
-    toggleChartSurface () {
-      this.chartSurface = this.chartSurface === 'tradingview' ? 'klinecharts' : 'tradingview'
     },
     handleTvIndicatorError (message) {
       // The chart keeps the candles when a study fails; surfacing the reason is
       // what stops "why is my indicator missing" from becoming a mystery.
       if (message) this.$message.warning(message)
-    },
-    hydrateChartPaneIndicators (items, visibleIndicatorIds, paneId) {
-      const nonPython = this.normalizePersistedChartIndicators(items)
-      const pythonBlocks = []
-      const seen = new Set()
-      for (const rawId of visibleIndicatorIds || []) {
-        const id = Number(rawId)
-        if (!id || seen.has(id)) continue
-        seen.add(id)
-        const indicator = this.indicators.find(item => Number(item.id) === id)
-        if (!indicator) continue
-        const built = this.buildIdePythonIndicatorForChart(
-          indicator,
-          this.getIndicatorExecutableCode(indicator),
-          paneId
-        )
-        if (built) pythonBlocks.push(built)
-      }
-      return [...nonPython, ...pythonBlocks]
     },
     initializeChartWorkspace () {
       const allowedModes = [1, 2, 4]
@@ -2033,11 +1947,6 @@ export default {
       this.chartCandleType = supportedChartTypes.has(pane.candleType) ? pane.candleType : 'candle_solid'
       this.chartVisibleIndicatorIds = [...(pane.visibleIndicatorIds || [])]
       this.chartIndicatorRunning = pane.indicatorRunning !== false
-      this.activeIndicators = this.hydrateChartPaneIndicators(
-        pane.activeIndicators,
-        this.chartIndicatorRunning ? this.chartVisibleIndicatorIds : [],
-        pane.id
-      )
       this.qtSymbol = this.symbol
       this.selectedWatchlistKey = marketContextKey({
         market: this.market,
@@ -2050,7 +1959,6 @@ export default {
         this.applyingChartPaneState = false
         this.syncActivePaneFromWorkspace()
         this.ensureChartReady()
-        this.syncChartPresetIndicatorOptions()
       })
     },
     activateChartPane (paneId) {
@@ -2090,33 +1998,11 @@ export default {
       this.syncActivePaneFromWorkspace()
       return (this.chartPanes || []).slice(0, 4).map(pane => ({
         ...pane,
-        activeIndicators: this.normalizePersistedChartIndicators(pane.activeIndicators),
         visibleIndicatorIds: [...(pane.visibleIndicatorIds || [])]
       }))
     },
     handlePanePriceChange (paneId, payload) {
       if (paneId === this.activeChartPaneId) this.handleChartPriceChange(payload)
-    },
-    handlePaneIndicatorToggle (paneId, payload) {
-      if (paneId !== this.activeChartPaneId) this.applyChartPaneState(paneId)
-      this.handleIndicatorToggle(payload)
-    },
-    syncChartPresetIndicatorOptions () {
-      this.$nextTick(() => {
-        const chart = this.getChartRef()
-        const options = chart && chart.indicatorButtons
-        this.chartPresetIndicatorOptions = Array.isArray(options) ? options.slice() : []
-      })
-    },
-    onChartPresetIndicatorClick ({ key }) {
-      const option = this.chartPresetIndicatorOptions.find(item => item.id === key)
-      const chart = this.getChartRef()
-      if (!option || !chart || typeof chart.handleIndicatorButtonClick !== 'function') return
-      chart.handleIndicatorButtonClick(option)
-    },
-    isChartPresetIndicatorActive (indicatorId) {
-      if (indicatorId === 'vol') return true
-      return (this.activeIndicators || []).some(item => item && item.id === indicatorId)
     },
     restoreChartTypePreference () {
       const saved = storage.get(chartTypeStorageKey(this.userId))
@@ -2340,9 +2226,6 @@ export default {
         const s = typeof raw === 'string' ? JSON.parse(raw) : raw
         if (!s || typeof s !== 'object') return
         let hadChartVisibleKey = false
-        if (Array.isArray(s.activeIndicators)) {
-          this.activeIndicators = this.normalizePersistedChartIndicators(s.activeIndicators)
-        }
         if (Array.isArray(s.chartVisibleIndicatorIds)) {
           hadChartVisibleKey = true
           const valid = s.chartVisibleIndicatorIds
@@ -2432,7 +2315,6 @@ export default {
       try {
         const payload = {
           timeframe: this.timeframe,
-          activeIndicators: this.serializeChartIndicators(),
           chartLayoutMode: this.chartLayoutMode,
           activeChartPaneId: this.activeChartPaneId,
           chartPanes: this.serializeChartPanes(),
@@ -2520,26 +2402,6 @@ export default {
         }))
       } catch (_) { /* ignore quota */ }
     },
-    normalizePersistedChartIndicators (items) {
-      if (!Array.isArray(items)) return []
-      return items
-        .filter(item => item && item.id && item.id !== 'selected-python-indicator' && item.type !== 'python' && !String(item.id).startsWith('ide-py-'))
-        .map(item => ({
-          id: item.id,
-          instanceId: item.instanceId || `${item.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          name: item.name,
-          shortName: item.shortName,
-          type: item.type,
-          visible: item.visible !== false,
-          params: item.params && typeof item.params === 'object' ? { ...item.params } : {},
-          style: item.style && typeof item.style === 'object'
-            ? { color: item.style.color || '', lineWidth: Number(item.style.lineWidth || 2) }
-            : { color: '', lineWidth: 2 }
-        }))
-    },
-    serializeChartIndicators () {
-      return this.normalizePersistedChartIndicators(this.activeIndicators)
-    },
 
     async loadIndicators ({ background = false } = {}) {
       if (!this.userId) return
@@ -2549,7 +2411,7 @@ export default {
       this._indicatorLoadPromise = (async () => {
         const res = await request({ url: '/api/indicator/getIndicators', method: 'get', params: { userid: this.userId } })
         if (res && res.data && Array.isArray(res.data)) {
-          this.indicators = res.data.map(item => ({ ...item, type: 'python' }))
+          this.indicators = res.data.map(item => ({ ...item, type: 'pine' }))
           this.indicatorsLoadedAt = Date.now()
         }
       })()
@@ -2641,6 +2503,8 @@ export default {
     initCodeMirror () {
       const el = this.$refs.codeEditor
       if (!el) return
+      // The Pine mode is ours; CodeMirror 5 ships no mode for it.
+      definePineMode(CodeMirror)
       if (this.cmInstance) {
         this.cmInstance.toTextArea()
         this.cmInstance = null
@@ -2649,7 +2513,7 @@ export default {
       el.innerHTML = ''
       el.appendChild(textarea)
       this.cmInstance = CodeMirror.fromTextArea(textarea, {
-        mode: 'python',
+        mode: 'pine',
         theme: this.isDarkTheme ? 'monokai' : 'eclipse',
         lineNumbers: true,
         lineWrapping: true,
@@ -2685,79 +2549,58 @@ export default {
     },
     castIndicatorParamValue (value, type) {
       const t = String(type || '').toLowerCase()
+      // A Pine default may be an expression the form cannot evaluate before the
+      // script runs (`input.int(timeframe.period)`). Keeping it undefined lets
+      // the runtime apply the script's own default instead of a fabricated 0.
+      if (value === undefined || value === null) return value
       if (t === 'bool') {
+        if (typeof value === 'boolean') return value
         return ['true', '1', 'yes', 'on'].includes(String(value).toLowerCase())
       }
       if (t === 'int') {
         const n = Number(value)
-        return Number.isFinite(n) ? Math.round(n) : 0
+        return Number.isFinite(n) ? Math.round(n) : value
       }
       if (t === 'float') {
         const n = Number(value)
-        return Number.isFinite(n) ? n : 0
+        return Number.isFinite(n) ? n : value
       }
-      return value == null ? '' : String(value)
+      return String(value)
     },
+    /**
+     * The settings panel is built from the script's own `input.*` declarations.
+     *
+     * There is no second source of truth to keep in sync: the default the panel
+     * shows IS the default the script runs with, because both are read from the
+     * same declaration. `rangeText` is presentation only; `min`/`max`/`step`
+     * are what the control uses.
+     */
     parseIndicatorParamSpecs (code) {
       if (!code || typeof code !== 'string') return []
-      const paramRe = /^\s*#\s*@param\s+(\w+)\s+(int|float|bool|str|string)\s+(\S+)\s*(.*)$/i
-      const rangeRe = /(?:^|\s)range\s*=\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)/i
-      const valuesRe = /(?:^|\s)values\s*=\s*([^\s]+)/i
-      const out = []
-      for (const rawLine of code.split('\n')) {
-        const m = rawLine.match(paramRe)
-        if (!m) continue
-        const name = m[1]
-        const type = String(m[2] || '').toLowerCase().replace('string', 'str')
-        const rawDefault = m[3]
-        const rest = String(m[4] || '').trim()
-        const rangeMatch = rest.match(rangeRe)
-        const valuesMatch = rest.match(valuesRe)
-        const values = valuesMatch
-          ? valuesMatch[1].split(',').map(v => v.trim()).filter(Boolean).map(v => this.castIndicatorParamValue(v, type))
-          : null
-        let min
-        let max
-        let step
-        if (rangeMatch) {
-          min = Number(rangeMatch[1])
-          max = Number(rangeMatch[2])
-          step = Number(rangeMatch[3])
-        }
-        const description = rest
-          .replace(rangeRe, '')
-          .replace(valuesRe, '')
-          .trim()
-        out.push({
-          name,
-          type,
-          defaultValue: this.castIndicatorParamValue(rawDefault, type),
-          rawDefault,
-          description,
-          label: description ? description.replace(/[，,。.;；:：].*$/, '').trim() : name,
-          values,
-          min: Number.isFinite(min) ? min : undefined,
-          max: Number.isFinite(max) ? max : undefined,
-          step: Number.isFinite(step) && step > 0 ? step : undefined,
-          rangeText: Number.isFinite(min) && Number.isFinite(max)
-            ? `${this.$t('indicatorIde.paramPanel.range')}: ${min} - ${max}${Number.isFinite(step) ? ` / ${step}` : ''}`
+      return parsePineInputSpecs(code).map((spec) => {
+        const min = spec.min
+        const max = spec.max
+        const step = spec.step
+        return {
+          ...spec,
+          rangeText: Number.isFinite(min) || Number.isFinite(max)
+            ? `${this.$t('indicatorIde.paramPanel.range')}: ${Number.isFinite(min) ? min : ''} - ${Number.isFinite(max) ? max : ''}${Number.isFinite(step) ? ` / ${step}` : ''}`
             : ''
-        })
-      }
-      return out
+        }
+      })
     },
     parseIndicatorParamRaw (code) {
-      const params = {}
-      for (const spec of this.parseIndicatorParamSpecs(code || '')) {
-        params[spec.name] = spec.defaultValue
-      }
-      return params
+      if (!code || typeof code !== 'string') return {}
+      return parsePineInputDefaults(code)
     },
     normalizeIndicatorParamMap (params, specs = this.currentIndicatorParamSpecs) {
       const out = {}
       for (const spec of specs || []) {
         const hasValue = params && Object.prototype.hasOwnProperty.call(params, spec.name)
-        out[spec.name] = this.castIndicatorParamValue(hasValue ? params[spec.name] : spec.defaultValue, spec.type)
+        const value = this.castIndicatorParamValue(hasValue ? params[spec.name] : spec.defaultValue, spec.type)
+        // Leave an unknown default out of the map entirely: an explicit
+        // `undefined` would be sent to the runtime as an override.
+        if (value !== undefined) out[spec.name] = value
       }
       return out
     },
@@ -2831,7 +2674,7 @@ export default {
     },
     writeIndicatorParamsToCode () {
       if (this.selectedIndicatorCodeHidden || !this.currentIndicatorParamSpecs.length) return
-      const nextCode = this.applyIndicatorParamsToCode(this.currentCode || '', this.normalizeIndicatorParamMap(this.indicatorParamDraft))
+      const nextCode = applyPineInputValues(this.currentCode || '', this.normalizeIndicatorParamMap(this.indicatorParamDraft))
       if (nextCode === this.currentCode) {
         this.$message.info(this.$t('indicatorIde.applyCandidateNoChanges'))
         return
@@ -3162,13 +3005,18 @@ export default {
     extractIndicatorNameFromCode (code) {
       const raw = String(code || '')
       if (!raw.trim()) return ''
+      // The title the author typed into the declaration is the name the chart
+      // legend shows, so it wins. `title=` and the positional form are both
+      // legal Pine.
+      const declaration = raw.match(/^[ \t]*(?:indicator|strategy)\s*\(\s*(?:title\s*=\s*)?(['"])(.*?)\1/m)
+      if (declaration && declaration[2] && declaration[2].trim()) {
+        return declaration[2].trim()
+      }
+      // Scripts saved by the Python IDE carry the name in an assignment; keep
+      // reading it so an unmigrated row still lists under its real name.
       const assignment = raw.match(/^\s*my_indicator_name\s*=\s*(['"])(.*?)\1\s*$/m)
       if (assignment && assignment[2] && assignment[2].trim()) {
         return assignment[2].trim()
-      }
-      const outputName = raw.match(/['"]name['"]\s*:\s*(['"])(.*?)\1/)
-      if (outputName && outputName[2] && outputName[2].trim()) {
-        return outputName[2].trim()
       }
       return ''
     },
@@ -3184,56 +3032,13 @@ export default {
       const codeName = this.extractIndicatorNameFromCode(code)
       return codeName || ind.name || (ind.id ? `Indicator #${ind.id}` : 'New Indicator')
     },
-    isIdePythonActiveItem (item) {
-      if (!item) return false
-      if (item.type === 'python') return true
-      if (item.id === 'selected-python-indicator') return true
-      if (String(item.id || '').startsWith('ide-py-')) return true
-      return false
-    },
-    buildIdePythonIndicatorForChart (ind, codeForChart, paneId = this.activeChartPaneId) {
-      if (!ind) return null
-      const code = codeForChart != null ? codeForChart : (ind.code || '')
-      if (!code || !String(code).trim()) return null
-      const chartId = `ide-py-${ind.id}`
-      const runtimeParams = this.resolveIndicatorRuntimeParams(ind, code)
-      return {
-        ...ind,
-        id: chartId,
-        instanceId: chartId,
-        originalId: ind.id,
-        type: 'python',
-        code,
-        params: runtimeParams,
-        calculate: async (klineData, params = {}) => {
-          const chart = this.getChartRef(paneId)
-          if (!chart || typeof chart.executePythonStrategy !== 'function') return null
-          return chart.executePythonStrategy(code, klineData, { ...runtimeParams, ...(params || {}) }, {
-            ...ind,
-            originalId: ind.id,
-            id: ind.id,
-            userId: this.userId
-          })
-        }
-      }
-    },
-    syncSelectedIndicatorToChart (codeOverride) {
-      const nonPython = this.activeIndicators.filter(item => !this.isIdePythonActiveItem(item))
-      const pythonBlocks = []
-      if (this.chartIndicatorRunning) {
-        const seen = new Set()
-        for (const rawId of this.chartVisibleIndicatorIds || []) {
-          const id = Number(rawId)
-          if (isNaN(id) || seen.has(id)) continue
-          seen.add(id)
-          const ind = this.indicators.find(i => Number(i.id) === id)
-          if (!ind) continue
-          const code = this.getIndicatorExecutableCode(ind, Number(this.selectedIndicatorId) === id ? codeOverride : undefined)
-          const built = this.buildIdePythonIndicatorForChart(ind, code, this.activeChartPaneId)
-          if (built) pythonBlocks.push(built)
-        }
-      }
-      this.activeIndicators = [...nonPython, ...pythonBlocks]
+    /**
+     * The pane state is the source of truth for what is drawn, so nothing has
+     * to be rebuilt here; the chart reconciles its own study list from the
+     * `indicators` prop. Kept as a no-op-with-a-redraw rather than deleted
+     * because several flows call it after changing the visible set.
+     */
+    syncSelectedIndicatorToChart () {
       this.$nextTick(() => {
         const chart = this.getChartRef()
         if (chart && typeof chart.updateIndicators === 'function') {
@@ -3373,44 +3178,6 @@ export default {
           try { inst.resize() } catch (_) {}
         }
       })
-    },
-    handleIndicatorToggle ({ action, indicator }) {
-      if (!indicator || (!indicator.id && !indicator.instanceId)) return
-      const targetInstanceId = indicator.instanceId || indicator.id
-      const parseIdeDbId = (s) => {
-        const m = String(s || '').match(/^ide-py-(\d+)$/)
-        return m ? Number(m[1]) : null
-      }
-      if (action === 'remove') {
-        const dbId = parseIdeDbId(indicator.id) || parseIdeDbId(targetInstanceId)
-        if (dbId != null && !isNaN(dbId)) {
-          this.chartVisibleIndicatorIds = this.chartVisibleIndicatorIds.filter(x => Number(x) !== dbId)
-        } else if (String(indicator.id) === 'selected-python-indicator' || String(targetInstanceId) === 'selected-python-indicator') {
-          if (this.selectedIndicatorId != null) {
-            this.chartVisibleIndicatorIds = this.chartVisibleIndicatorIds.filter(x => Number(x) !== Number(this.selectedIndicatorId))
-          }
-        }
-      }
-      if (action === 'add') {
-        this.activeIndicators = [...this.activeIndicators, { ...indicator, instanceId: targetInstanceId, calculate: null }]
-      } else if (action === 'update') {
-        this.activeIndicators = this.activeIndicators.map(item => {
-          if ((item.instanceId || item.id) !== targetInstanceId) return item
-          return {
-            ...item,
-            ...indicator,
-            instanceId: targetInstanceId,
-            params: indicator.params && typeof indicator.params === 'object' ? { ...indicator.params } : (item.params || {}),
-            style: indicator.style && typeof indicator.style === 'object'
-              ? { color: indicator.style.color || '', lineWidth: Number(indicator.style.lineWidth || 2) }
-              : (item.style || { color: '', lineWidth: 2 }),
-            calculate: null
-          }
-        })
-      } else if (action === 'remove') {
-        this.activeIndicators = this.activeIndicators.filter(item => (item.instanceId || item.id) !== targetInstanceId)
-      }
-      this.syncSelectedIndicatorToChart()
     },
 
     // ===== Save =====
@@ -4135,13 +3902,15 @@ export default {
     formatQualityHint (h) {
       if (!h || !h.code) return ''
       if (h.code === 'PARAM_DEFAULT_MISMATCH') {
+        // Retained for hints stored before indicators moved to Pine, where a
+        // declaration and the value the script actually read could disagree.
         const items = Array.isArray(h.params && h.params.items) ? h.params.items : []
         const details = items
           .map(item => {
             const name = item && item.name ? item.name : '-'
             const declared = item && item.declared !== undefined ? item.declared : '-'
             const fallback = item && item.fallback !== undefined ? item.fallback : '-'
-            return `${name}: @param=${declared}, params.get=${fallback}`
+            return `${name}: declared=${declared}, used=${fallback}`
           })
           .join('; ')
         const key = 'indicatorIde.quality.PARAM_DEFAULT_MISMATCH'
@@ -4943,13 +4712,6 @@ export default {
     liveTradingEnabled (enabled) {
       if (!enabled && this.quickTradeDrawerVisible) {
         this.closeQuickTradeFloat()
-        this.schedulePersistIdeUiState()
-      }
-    },
-    activeIndicators: {
-      deep: true,
-      handler () {
-        this.syncActivePaneFromWorkspace()
         this.schedulePersistIdeUiState()
       }
     },

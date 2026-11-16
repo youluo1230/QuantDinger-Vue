@@ -13,11 +13,11 @@ import { createSeriesCache, resolveCustomIndicators } from '@/charting/indicator
 /**
  * TradingView Charting Library surface.
  *
- * This replaces the klinecharts view where the widget is expected to behave like
- * TradingView (drawing tools, saved layouts, indicators drawn by our backend).
- * It owns no data of its own: the datafeed in `charting/datafeed.js` answers
- * every bar request from the market-data API, and indicators arrive as plots
- * from `/api/indicator/chart-preview`.
+ * This is the only chart the Indicator IDE draws on. It owns no data of its own:
+ * the datafeed in `charting/datafeed.js` answers every bar request from the
+ * market-data API, and indicators are executed in this process by PineTS -- see
+ * `indicatorPlots.js`. Nothing about a study travels over the network, which is
+ * why a study can be redrawn as often as the author saves.
  */
 export default {
   name: 'TradingViewChart',
@@ -30,18 +30,33 @@ export default {
     timeframe: { type: String, default: '1H' },
     theme: { type: String, default: 'dark' },
     locale: { type: String, default: 'zh' },
-    // Indicators to draw, as `{indicatorId, name, params, code}`. They are
-    // computed by the backend and replayed in the library; nothing is evaluated
-    // in the browser. `code` carries an unsaved draft so the editor can show
-    // what the author is typing rather than the last saved version.
-    indicators: { type: Array, default: () => [] }
+    // Indicators to draw, as `{indicatorId, name, params, code}`. Each carries
+    // its Pine source, which this component executes in the browser. `code` may
+    // hold an unsaved draft so the editor can show what the author is typing
+    // rather than the last saved version.
+    indicators: { type: Array, default: () => [] },
+    candleType: { type: String, default: 'candle_solid' },
+    // Entry levels of the quick-trade positions, as `{side, size, entryPrice,
+    // costLabel, entryLabel}`. Drawn as price lines because a horizontal level
+    // is what the trader reads; the bundled canvas drew them as overlays.
+    quickTradePositions: { type: Array, default: () => [] }
   },
   data () {
     return {
       handle: null,
       error: '',
       indicatorError: '',
-      seriesCache: createSeriesCache()
+      seriesCache: createSeriesCache(),
+      positionLines: [],
+      // The IDE resizes the mounted chart after a fullscreen change by calling
+      // `chartRef.resize()`, a shape it inherited from the bundled canvas. The
+      // library resizes itself from its container, so this is the smallest
+      // object that keeps that call honest instead of throwing.
+      chartRef: {
+        resize: () => {
+          window.dispatchEvent(new Event('resize'))
+        }
+      }
     }
   },
   watch: {
@@ -64,6 +79,12 @@ export default {
       deep: true,
       handler () {
         this.reconcileStudies()
+      }
+    },
+    quickTradePositions: {
+      deep: true,
+      handler () {
+        this.drawPositionLines()
       }
     }
   },
@@ -88,7 +109,15 @@ export default {
           timeframe: this.timeframe,
           theme: this.theme,
           locale: this.locale,
-          customIndicators: () => this.loadIndicators()
+          customIndicators: () => this.loadIndicators(),
+          // The quick-trade panel prefills its price from the chart's last
+          // trade. The bundled canvas emitted this; without it the panel would
+          // keep whatever price it last saw, which is worse than a stale label
+          // because it is the number an order gets submitted at.
+          onRealtimeBar: ({ bar }) => {
+            const close = Number(bar?.close)
+            if (Number.isFinite(close) && close > 0) this.$emit('price-change', close)
+          }
         })
       } catch (err) {
         // A missing vendored bundle must not take the page down with it; the
@@ -102,6 +131,7 @@ export default {
       // no-op, which is exactly how the studies went missing before.
       this.handle.widget.onChartReady?.(() => {
         this.drawStudies()
+        this.drawPositionLines()
       })
     },
     /**
@@ -223,8 +253,105 @@ export default {
       // study on the chart by itself.
       return indicators
     },
+    /**
+     * Redraw after the study set changed.
+     *
+     * `indicators` is watched, so this is normally automatic; the method exists
+     * because the IDE calls `updateIndicators()` on whatever chart it mounted
+     * and a silent no-op would leave a stale study on screen.
+     */
+    async updateIndicators () {
+      await this.reconcileStudies()
+    },
+    /**
+     * A canvas snapshot for the marketplace preview.
+     *
+     * The library has the screenshot; our caller used to get one from the
+     * bundled canvas. Returning a data URL keeps the publish path unchanged.
+     */
+    async captureMarketPreview (options = {}) {
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.takeClientScreenshot !== 'function') return ''
+      try {
+        const canvas = await chart.takeClientScreenshot({
+          // The library's own watermark is already part of the picture; asking
+          // for it twice would stamp the preview twice.
+          hideResolution: false
+        })
+        if (!canvas) return ''
+        const target = document.createElement('canvas')
+        const width = Math.max(640, Number(options.width) || canvas.width)
+        const height = Math.max(360, Number(options.height) || canvas.height)
+        target.width = width
+        target.height = height
+        const context = target.getContext('2d')
+        if (!context) return ''
+        // Letterbox rather than stretch: a squashed chart misreads the pattern
+        // the preview is meant to show.
+        const scale = Math.min(width / canvas.width, height / canvas.height)
+        const drawWidth = canvas.width * scale
+        const drawHeight = canvas.height * scale
+        context.fillStyle = this.theme === 'dark' ? '#131722' : '#ffffff'
+        context.fillRect(0, 0, width, height)
+        context.drawImage(canvas, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight)
+        return target.toDataURL('image/png')
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('takeClientScreenshot failed', err)
+        }
+        return ''
+      }
+    },
+    /**
+     * Draw the entry level of each open position.
+     *
+     * A trader reads the entry as a horizontal level against the live price, so
+     * a price line is the honest drawing; the previous renderer drew it as an
+     * overlay with a label, which is the same information on a different
+     * primitive. Lines are removed before being redrawn because the library has
+     * no "update this line" call.
+     */
+    drawPositionLines () {
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.createOrderLine !== 'function') return
+      for (const line of this.positionLines) {
+        try {
+          line.remove()
+        } catch (_error) {
+          // A line whose chart went away is already gone.
+        }
+      }
+      this.positionLines = []
+      const positions = Array.isArray(this.quickTradePositions) ? this.quickTradePositions : []
+      for (const position of positions) {
+        const price = Number(position?.entryPrice)
+        if (!Number.isFinite(price) || price <= 0) continue
+        const side = position?.side === 'short' ? 'short' : 'long'
+        const colour = side === 'short' ? '#f04438' : '#12b76a'
+        // Deliberately not awaited in order: each line is independent, and
+        // awaiting them serially would make a five-position account pay five
+        // round trips before the last line appears.
+        Promise.resolve(chart.createOrderLine())
+          .then((line) => {
+            if (!line) return
+            line.setPrice(price)
+            line.setLineStyle(2)
+            line.setLineColor(colour)
+            line.setText(`${String(position?.costLabel || '')} ${side === 'short' ? '▼' : '▲'}`.trim())
+            line.setQuantity('')
+            line.setEditable(false)
+            this.positionLines.push(line)
+          })
+          .catch((error) => {
+            if (process.env.NODE_ENV !== 'production') {
+              console.debug('createOrderLine failed', error)
+            }
+          })
+      }
+    },
     teardown () {
       if (!this.handle) return
+      this.positionLines = []
       try {
         this.handle.destroy()
       } finally {

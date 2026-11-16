@@ -39,15 +39,18 @@ test('indicator workspace exposes a constrained and persistent horizontal resize
   assert.match(indicatorIdeSource, /<span>\{\{ \$t\('indicatorIde\.hideCode'\) \}\}<\/span>/)
 })
 
-test('indicator-to-strategy conversion has a parameter parser', () => {
-  assert.match(
-    indicatorIdeSource,
-    /parseIndicatorParamRaw \(code\) \{[\s\S]*?this\.parseIndicatorParamSpecs\(code \|\| ''\)[\s\S]*?params\[spec\.name\] = spec\.defaultValue/
-  )
+test('indicator-to-strategy conversion reads the settings the script declares', () => {
+  // The IDE used to scrape `# @param` comments, which a Pine script does not
+  // have. Both the panel and the strategy conversion now come from the same
+  // declaration parser, so the defaults the conversion starts from are the ones
+  // the runtime would use.
+  assert.match(indicatorIdeSource, /parsePineInputSpecs\(code\)/)
+  assert.match(indicatorIdeSource, /parsePineInputDefaults\(code\)/)
   assert.match(
     indicatorIdeSource,
     /buildIndicatorToStrategyContext \(\)[\s\S]*?this\.parseIndicatorParamRaw\(code \|\| ''\)/
   )
+  assert.doesNotMatch(indicatorIdeSource, /@param/)
 })
 
 test('indicator IDE no longer carries the retired execution-column conversion prompt', () => {
@@ -121,7 +124,9 @@ test('multi-chart layout keeps each chart instance scoped to its own container a
   assert.match(indicatorIdeSource, /chartLayoutMode: 1/)
   assert.match(indicatorIdeSource, /setChartLayoutMode \(mode\)/)
   assert.match(indicatorIdeSource, /chartPanes: this\.serializeChartPanes\(\)/)
-  assert.match(indicatorIdeSource, /hydrateChartPaneIndicators/)
+  // The runtime indicator list the bundled canvas needed is gone; a pane is
+  // now identified by its checked ids and nothing has to be hydrated.
+  assert.match(indicatorIdeSource, /paneIndicatorCount \(pane\)/)
 })
 
 test('multi-chart layout uses one compact dropdown instead of three persistent toolbar buttons', () => {
