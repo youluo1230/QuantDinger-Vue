@@ -8,7 +8,7 @@
 </template>
 
 <script>
-import { createBarStore, mountTradingViewChart } from '@/charting/tradingview'
+import { createBarStore, intervalFor, mountTradingViewChart } from '@/charting/tradingview'
 import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
 
 /**
@@ -28,6 +28,17 @@ import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from 
  * script is time the page does not have. Length is mixed in by the caller, which
  * covers the one weakness a short hash has against accidental collisions.
  */
+/**
+ * How often a live bar may trigger a study recalculation.
+ *
+ * The venue pushes several ticks a second and every one of them runs every
+ * checked script again. A study is a line on a chart, not an order book, so
+ * four updates a second is already faster than the eye: this is the gap
+ * between passes, not a debounce, so a burst is coalesced into the next slot
+ * instead of being dropped.
+ */
+const LIVE_RESOLVE_MS = 250
+
 function codeFingerprint (code) {
   const text = String(code || '')
   if (!text) return '0'
@@ -84,6 +95,12 @@ export default {
       // The last study set this component actually rebuilt for; see the
       // `indicators` watcher for why object identity cannot answer that.
       lastIndicatorsSignature: '',
+      // What the library created, in creation order, so a live bar can update
+      // those studies in place instead of rebuilding the widget.
+      liveStudies: [],
+      // The most recent socket bar, waiting for the next resolve slot.
+      liveBar: null,
+      liveResolveTimer: null,
       positionLines: [],
       // The IDE resizes the mounted chart after a fullscreen change by calling
       // `chartRef.resize()`, a shape it inherited from the bundled canvas. The
@@ -196,9 +213,16 @@ export default {
           // trade. The bundled canvas emitted this; without it the panel would
           // keep whatever price it last saw, which is worse than a stale label
           // because it is the number an order gets submitted at.
-          onRealtimeBar: ({ bar }) => {
+          //
+          // The same push also feeds the study bar series: a study is a
+          // precomputed array keyed by candle time, so a live bar the array has
+          // never seen resolves to a gap and the study lines stop at the last
+          // historical candle. Keeping the live bar in the series the studies
+          // read is what makes them advance with the market.
+          onRealtimeBar: ({ bar, resolution }) => {
             const close = Number(bar?.close)
             if (Number.isFinite(close) && close > 0) this.$emit('price-change', close)
+            this.applyRealtimeBar(bar, resolution)
           }
         })
       } catch (err) {
@@ -316,18 +340,25 @@ export default {
       this.reportFailures(failures)
       const chart = this.handle?.widget?.activeChart?.()
       if (!chart) return
+      // Collected in creation order so a live bar can update these studies
+      // instead of rebuilding the widget: the position in this array is the
+      // only handle the library gives back that lines a study up with the
+      // resolved output.
+      const created = []
       for (const study of indicators) {
         try {
           // Overlay placement comes from the study's own metainfo; forcing the
           // overlay flag here would fight the indicator author's intent.
           // eslint-disable-next-line no-await-in-loop
           await chart.createStudy(study.name, study.metainfo.overlay === true, false, {})
+          created.push(study)
         } catch (err) {
           if (process.env.NODE_ENV !== 'production') {
             console.debug('createStudy failed', study.name, err)
           }
         }
       }
+      this.liveStudies = created
     },
     reportFailures (failures) {
       const list = Array.isArray(failures) ? failures : []
@@ -375,6 +406,76 @@ export default {
       if (this.handle && signature === this.lastIndicatorsSignature) return
       this.lastIndicatorsSignature = signature
       await this.reconcileStudies()
+    },
+    /**
+     * Advance the studies onto the bar the socket just delivered.
+     *
+     * A study here is output computed from a fixed window of bars, keyed by
+     * candle time, so a candle it has never seen resolves to a gap: the lines
+     * stop at the last closed bar while the price keeps moving. That is the
+     * one part of the chart that did not follow the market.
+     *
+     * Recorded rather than recomputed on the spot: a venue pushes several ticks
+     * a second and every tick would re-run every checked script. The bar is
+     * kept, a pass is scheduled at most once per `LIVE_RESOLVE_MS`, and the
+     * pass runs the studies over the series that now includes that bar.
+     *
+     * No widget rebuild: the study instance the library holds is told to read
+     * a new lookup (`update`), which is all a study that only grew by one bar
+     * needs. Rebuilding here is what would make a live chart flicker.
+     */
+    applyRealtimeBar (bar, resolution) {
+      if (!bar || !this.indicators.length) return
+      // Only the resolution the chart is showing moves its own studies: a
+      // socket pushing an hourly bar has nothing to say about a daily study.
+      if (resolution && resolution !== intervalFor(this.timeframe)) return
+      this.liveBar = bar
+      if (this.liveResolveTimer) return
+      this.liveResolveTimer = setTimeout(() => {
+        this.liveResolveTimer = null
+        this.refreshLiveStudies()
+      }, LIVE_RESOLVE_MS)
+    },
+    /**
+     * Recompute the drawn studies over the series that now includes the live
+     * bar, and point each one at its new output.
+     *
+     * `liveStudies` holds what `drawStudies`/`loadIndicators` built, in the
+     * same order the library created them, so a study can be updated by
+     * position instead of being torn down and recreated.
+     */
+    async refreshLiveStudies () {
+      if (!this.handle || !this.liveBar || !this.liveStudies.length) return
+      const bar = this.liveBar
+      this.liveBar = null
+      const touched = this.barCache.rememberLive(bar, this.timeframe)
+      if (!touched.length) return
+      // The outputs were computed before this bar existed, so their cache
+      // entries describe a series that no longer exists. Clearing is honest
+      // here; the entries are rebuilt from the same download.
+      this.seriesCache.clear()
+      try {
+        const { indicators } = await resolveCustomIndicators({
+          indicators: this.indicators,
+          market: this.market,
+          symbol: this.symbol,
+          timeframe: this.timeframe,
+          cache: this.seriesCache,
+          barCache: this.barCache
+        })
+        // Matched on the series key, not on position: one study failing to
+        // resolve would otherwise shift every later study onto the previous
+        // study's instance. A study with no match simply keeps its old output.
+        const byKey = new Map(this.liveStudies.map(study => [study.key, study]))
+        for (const next of indicators) {
+          byKey.get(next.key)?.update?.({ plots: next.series, candleTimes: next.candleTimes })
+        }
+        this.handle?.widget?.activeChart?.()?.refreshMarks?.()
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('live study refresh failed', err)
+        }
+      }
     },
     /**
      * A canvas snapshot for the marketplace preview.

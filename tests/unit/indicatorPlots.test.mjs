@@ -189,6 +189,22 @@ describe('normalizePlots', () => {
     assert.deepEqual(plots.normalizePlots(undefined), [])
     assert.deepEqual(plots.normalizePlots({}), [])
   })
+
+  it('carries the runtime\'s hidden flag through to the layout', () => {
+    // The runtime marks a series the author sent to the data window or to
+    // nowhere at all, and `buildPlotLayout` reads that flag to tell the library
+    // not to paint it. Losing it here made `visible: !plot.hidden` permanently
+    // true, so every `display=display.none` helper series was drawn on the
+    // pane -- 8 corpus scripts draw nothing BUT those series.
+    const series = plots.normalizePlots([
+      { name: 'Hidden', type: 'line', hidden: true, data: [1, 2] },
+      { name: 'Drawn', type: 'line', data: [3, 4] }
+    ])
+    assert.deepEqual(series.map(item => [item.name, item.hidden === true]), [
+      ['Hidden', true],
+      ['Drawn', false]
+    ])
+  })
 })
 
 describe('barTimeMs', () => {
@@ -715,7 +731,7 @@ describe('replay design', () => {
     // `candleTimes` used to be fetched and then ignored, which is what made an
     // ordinal replay the only option.
     assert.match(source, /candleTimes: result\.candleTimes/)
-    assert.match(source, /buildBarTimeIndex\(\{ plotSpecs, candleTimes \}\)/)
+    assert.match(source, /buildBarTimeIndex\(\{ plotSpecs/)
     assert.match(source, /candleTimes: loaded\?\.candleTimes/)
   })
 })
@@ -809,6 +825,109 @@ describe('createStudyBarCache', () => {
     assert.equal(cache.size, 1)
     cache.clear()
     assert.equal(cache.size, 0)
+  })
+
+  it('hands a live bar to the series once the socket delivers one', async () => {
+    // The fetched window ends at the most recent closed candle. Without the
+    // live bar the studies resolve that bar's successor to a gap and the lines
+    // stop while the price keeps moving -- which is the one part of the chart
+    // that did not follow the market.
+    countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    const args = { market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 }
+    const closed = await cache.load(args)
+    // Milliseconds: `parseTick` hands the socket's bar over in ms, while the
+    // fixture above is in the seconds the endpoint uses. Mixing them would make
+    // the bar look older than the series and the append would be skipped.
+    const live = { time: (1700000000 + 3 * 3600) * 1000, open: 1.5, high: 2.5, low: 1.4, close: 2.4, volume: 11 }
+    const touched = cache.rememberLive(live, '1H')
+    assert.equal(touched.length, 1)
+    const merged = await cache.load(args)
+    assert.equal(merged.length, closed.length + 1)
+    assert.equal(merged[merged.length - 1].time, live.time)
+    assert.equal(merged[merged.length - 1].close, 2.4)
+  })
+
+  it('replaces the candle a forming live bar belongs to', async () => {
+    // A live bar keeps its open time while it forms, so the same bar arrives
+    // repeatedly. Appending each one would grow the series by a bar per tick.
+    countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    const args = { market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 }
+    const closed = await cache.load(args)
+    const forming = { time: (1700000000 + 2 * 3600) * 1000, open: 1, high: 9, low: 0.5, close: 8, volume: 99 }
+    cache.rememberLive(forming, '1H')
+    const merged = await cache.load(args)
+    assert.equal(merged.length, closed.length)
+    assert.equal(merged[merged.length - 1].close, 8)
+  })
+
+  it('keeps a live bar that arrives before the series has loaded', async () => {
+    // The first tick after a symbol switch can beat the bars it belongs to.
+    // Dropping it would leave the study a bar behind until the next tick.
+    countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    const args = { market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 }
+    const early = { time: (1700000000 + 3 * 3600) * 1000, open: 1, high: 2, low: 1, close: 2, volume: 1 }
+    // Nothing is cached yet, so there is no drawn study to report.
+    assert.deepEqual(cache.rememberLive(early, '1H'), [])
+    const merged = await cache.load(args)
+    assert.equal(merged.length, bars.length + 1)
+    assert.equal(merged[merged.length - 1].time, early.time)
+  })
+
+  it('keeps a live bar away from a series on another timeframe', async () => {
+    // An hourly push says nothing about a daily series: appending it would move
+    // that series' last candle to the wrong time.
+    countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1D', limit: 1500 })
+    const live = { time: (1700000000 + 3 * 3600) * 1000, open: 1, high: 2, low: 1, close: 2, volume: 1 }
+    assert.equal(cache.rememberLive(live, '1H').length, 0)
+    const day = await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1D', limit: 1500 })
+    assert.equal(day.length, 3)
+  })
+})
+
+describe('buildCustomIndicator update', () => {
+  it('points the same instance at output computed from a longer series', () => {
+    // The library holds its own instance and calls `main` again when it
+    // recalculates, so a live bar is drawn by replacing the lookup that
+    // instance reads -- not by tearing the widget down.
+    // Normalised first, exactly as `resolveCustomIndicators` does: the layout
+    // builder reads `values`, which is what `normalizePlots` writes.
+    const times = [1700000000000, 1700003600000]
+    const study = plots.buildCustomIndicator({
+      indicatorId: 1,
+      name: 'x',
+      series: plots.normalizePlots([
+        { id: 'plot_0', kind: 'line', name: 'EMA', overlay: true, data: [1, 2] }
+      ]),
+      key: 'k',
+      candleTimes: times
+    })
+    const lookup = study.constructor.prototype.lookup
+    assert.deepEqual(lookup.barIndex.at(times[1]), [2])
+
+    const liveTime = 1700007200000
+    assert.equal(study.update({
+      plots: [{ id: 'plot_0', kind: 'line', name: 'EMA', overlay: true, data: [1, 2, 3] }],
+      candleTimes: [...times, liveTime]
+    }), true)
+    assert.deepEqual(study.constructor.prototype.lookup.barIndex.at(liveTime), [3])
+  })
+
+  it('refuses an update with nothing to index', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 1,
+      name: 'x',
+      series: [{ id: 'plot_0', kind: 'line', name: 'EMA', overlay: true, data: [1] }],
+      key: 'k',
+      candleTimes: [1700000000000]
+    })
+    assert.equal(study.update({}), false)
+    assert.equal(study.update({ plots: [], candleTimes: [1] }), false)
+    assert.equal(study.update({ plots: [{ name: 'a', data: [1] }], candleTimes: [] }), false)
   })
 })
 

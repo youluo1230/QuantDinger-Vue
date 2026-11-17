@@ -438,6 +438,29 @@ function isServableTimeframe (timeframe) {
 export function createStudyBarCache () {
   const settled = new Map()
   const pending = new Map()
+  // The last live bar per timeframe. A study over this series must see it: the
+  // fetched window ends at the most recent closed candle, so without it the
+  // study stops drawing while the price keeps moving.
+  //
+  // Keyed by timeframe rather than by series, so a bar that arrives before a
+  // study has loaded its bars is still applied when that load completes --
+  // otherwise the first tick after switching indicator would be lost and the
+  // study would stay a bar short until the next one.
+  const live = new Map()
+  const seriesKeyOf = (args) => [args.market, args.symbol, args.timeframe, args.exchangeId || '', args.marketType || '', args.instrumentId || '', args.limit].join('|')
+  /** Merge the live bar for this series' timeframe: it replaces the candle it is. */
+  const withLive = (key, bars) => {
+    // Key layout is market|symbol|timeframe|exchange|marketType|instrument|limit.
+    const bar = live.get(key.split('|')[2])
+    if (!bar) return bars
+    const out = bars.slice()
+    const last = out[out.length - 1]
+    if (last && Number(last.time) === Number(bar.time)) out[out.length - 1] = bar
+    // A live bar the window does not contain yet is one the market has just
+    // opened; appending it is what extends the series to now.
+    else if (!last || Number(bar.time) > Number(last.time)) out.push(bar)
+    return out
+  }
   return {
     /**
      * The bars for this series, fetching once however many callers ask.
@@ -446,14 +469,14 @@ export function createStudyBarCache () {
      * rather than inheriting a rejection that had nothing to do with its script.
      */
     async load (args) {
-      const key = [args.market, args.symbol, args.timeframe, args.exchangeId || '', args.marketType || '', args.instrumentId || '', args.limit].join('|')
-      if (settled.has(key)) return settled.get(key)
+      const key = seriesKeyOf(args)
+      if (settled.has(key)) return withLive(key, settled.get(key))
       if (pending.has(key)) return pending.get(key)
       const inflight = loadStudyBars(args)
         .then((bars) => {
           settled.set(key, bars)
           pending.delete(key)
-          return bars
+          return withLive(key, bars)
         })
         .catch((err) => {
           pending.delete(key)
@@ -462,9 +485,37 @@ export function createStudyBarCache () {
       pending.set(key, inflight)
       return inflight
     },
+    /**
+     * Record the bar the socket just delivered.
+     *
+     * Returns the series keys the bar belongs to so a caller knows which
+     * studies are now stale. A forming candle keeps the same time and replaces
+     * its predecessor, which is what a live bar is.
+     *
+     * `timeframe` is required: a cached series may be for a period the chart is
+     * not on (`request.security` reads a daily series from an hourly chart), and
+     * appending an hourly bar to a daily one would move its last candle to the
+     * wrong time.
+     */
+    rememberLive (bar, timeframe) {
+      if (!bar || !Number.isFinite(Number(bar.time))) return []
+      const wanted = String(timeframe || '').trim()
+      if (!wanted) return []
+      live.set(wanted, bar)
+      // The series this bar belongs to, so the caller knows what is now stale.
+      // Empty when nothing is loaded yet: the bar is kept and applies to the
+      // next load, but there is no drawn study to refresh.
+      const touched = []
+      for (const key of [...settled.keys(), ...pending.keys()]) {
+        if (key.split('|')[2] !== wanted) continue
+        touched.push(key)
+      }
+      return touched
+    },
     clear () {
       settled.clear()
       pending.clear()
+      live.clear()
     },
     get size () {
       return settled.size
@@ -591,6 +642,16 @@ export async function loadSeries ({
 export function normalizePlots (plots) {
   if (!Array.isArray(plots)) return []
   const out = []
+  // The runtime marks a series the author sent to the data window, the status
+  // line or nowhere at all. That flag has to survive this reduction: the study
+  // is built from what comes out of here, and a `display=display.none` helper
+  // series that loses its flag is painted on the pane as a line the author
+  // never wanted (it was happening to every one of the 8 corpus scripts whose
+  // only output is off-pane).
+  const record = (plot, entry) => {
+    if (plot.hidden === true) entry.hidden = true
+    out.push(entry)
+  }
   for (const plot of plots) {
     if (!plot || typeof plot !== 'object') continue
     const name = String(plot.name || plot.title || '').trim()
@@ -598,12 +659,12 @@ export function normalizePlots (plots) {
     // A cloud needs two channels; drawing only its midpoint would look like a
     // line and lose the band the author drew on purpose.
     if (isCloud(plot)) {
-      out.push({ kind: 'cloud', name, upper: channel(plot, 'upper'), lower: channel(plot, 'lower') })
+      record(plot, { kind: 'cloud', name, upper: channel(plot, 'upper'), lower: channel(plot, 'lower') })
       continue
     }
     const kind = plotKindOf(plot)
     if (kind === 'shape' || kind === 'char') {
-      out.push({
+      record(plot, {
         kind,
         name,
         values: markerChannel(plot),
@@ -618,7 +679,7 @@ export function normalizePlots (plots) {
       continue
     }
     if (kind === 'candle') {
-      out.push({
+      record(plot, {
         kind,
         name,
         candles: candleChannel(plot),
@@ -629,17 +690,17 @@ export function normalizePlots (plots) {
     }
     if (kind === 'barcolor' || kind === 'bgcolor') {
       const colors = normaliseColours(plot)
-      out.push({ kind, name, colors, overlay: plot.overlay !== false })
+      record(plot, { kind, name, colors, overlay: plot.overlay !== false })
       continue
     }
     if (kind === 'fill') {
       const plot1 = String(plot.plot1 || '').trim()
       const plot2 = String(plot.plot2 || '').trim()
       if (!plot1 || !plot2) continue
-      out.push({ kind, name, plot1, plot2, color: String(plot.color || '') })
+      record(plot, { kind, name, plot1, plot2, color: String(plot.color || '') })
       continue
     }
-    out.push({
+    record(plot, {
       kind: kind === 'bar' ? 'bar' : 'line',
       name,
       values: channel(plot, 'value'),
@@ -714,8 +775,18 @@ function isCloud (plot) {
   return Boolean(first && ('upper' in first || 'top' in first))
 }
 
+/**
+ * The points of a plot, in whichever shape the caller has them.
+ *
+ * `normalizePlots` reads `data` (what the runtime returns) and writes `values`
+ * (what the layout consumes), so a second pass over its own output used to read
+ * an empty array and silently blank the line. Accepting both makes the function
+ * idempotent, which is what a live update needs: it hands already-normalized
+ * series back through the same layout builder.
+ */
 function channel (plot, mode) {
-  const data = Array.isArray(plot.data) ? plot.data : []
+  const source = Array.isArray(plot.data) ? plot.data : (Array.isArray(plot.values) ? plot.values : [])
+  const data = source
   return data.map((point) => {
     if (point == null) return null
     if (typeof point === 'number') return Number.isFinite(point) ? point : null
@@ -731,7 +802,7 @@ function channel (plot, mode) {
 }
 
 function colourChannel (plot) {
-  const data = Array.isArray(plot.data) ? plot.data : []
+  const data = Array.isArray(plot.data) ? plot.data : (Array.isArray(plot.colors) ? plot.colors : [])
   const colors = data.map((point) => {
     if (!point || typeof point !== 'object') return null
     return point.color || point.fillColor || point.backgroundColor || null
@@ -788,13 +859,26 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     ...layout.extra
   }
 
-  // Built once, not per `init`: the precomputed output never changes, so the
-  // lookup is immutable. That is also why there is no `init` below.
-  const plotSpecs = layout.specs
-  const barIndex = buildBarTimeIndex({ plotSpecs, candleTimes })
-  const gapRow = layout.plots.map(() => NaN)
+  // One place builds the lookup, so the initial one and a live update cannot
+  // drift apart. It reads `state` rather than the locals above because a live
+  // update replaces both the specs and the plot count: a bar the market has
+  // just opened lengthens every value array, and a lookup still indexing the
+  // old columns would answer with the previous bar's numbers.
+  const state = { plotSpecs: layout.specs, plotCount: layout.plots.length }
+  const buildLookup = (times) => ({
+    barIndex: buildBarTimeIndex({ plotSpecs: state.plotSpecs, candleTimes: times }),
+    gapRow: new Array(state.plotCount).fill(NaN)
+  })
+  // The library constructs its own instance (`new Study()`), so `main` cannot
+  // read a field of the object returned below. This holder is reachable from
+  // the prototype instead, which is what lets a live bar replace the lookup:
+  // the values are recomputed against the bar the socket just delivered and
+  // the next recalculation draws them.
+  const lookup = buildLookup(candleTimes)
+  const barIndex = lookup.barIndex
 
   function Study () {}
+  Study.prototype.lookup = lookup
   /**
    * Deliberately no `init`.
    *
@@ -811,7 +895,9 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     // returning a gap keeps `main` honest in both cases and, unlike the old
     // cursor, does not spend a precomputed value on that call.
     for (const candidate of barTimeCandidates(ctx)) {
-      const row = barIndex.at(candidate)
+      // Read through the holder, not a closed-over constant: a live bar
+      // replaces the lookup so the next recalculation draws the new values.
+      const row = lookup.barIndex.at(candidate)
       // Copied because the library keeps the array it is handed; the indexed
       // rows are shared and must not become a channel for caller mutations.
       if (row) return row.slice()
@@ -820,7 +906,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     // returned only when the backend really has no value for this bar's time --
     // an explicit hole in its output, or a bar outside the window it computed.
     // It is never the result of walking off the end of an array.
-    return gapRow.slice()
+    return lookup.gapRow.slice()
   }
 
   return {
@@ -831,7 +917,34 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     // rather than an arrow.
     constructor: Study,
     series,
-    barIndex
+    barIndex,
+    // What the caller turns into the next lookup on a live bar, so it does not
+    // have to reach back into the cache for it.
+    candleTimes: Array.isArray(candleTimes) ? candleTimes : [],
+    /**
+     * Point the study at output computed from a longer series.
+     *
+     * The library holds its own `Study` instance, and that instance reads
+     * `lookup`, so replacing the lookup is what makes a live bar visible
+     * without a widget rebuild: the chart recalculates the study and the same
+     * instance answers with the new values.
+     *
+     * `plots` must describe the same script with the same declarations -- the
+     * metainfo above is frozen at construction and addresses plots by id. A
+     * live update only ever appends bars, so the ids do not move.
+     */
+    update ({ plots, candleTimes } = {}) {
+      if (!Array.isArray(plots) || !plots.length) return false
+      if (!Array.isArray(candleTimes) || !candleTimes.length) return false
+      // Same script, one more bar: the layout is rebuilt so the lookup indexes
+      // the longer value arrays. `metainfo` deliberately stays as it was -- the
+      // plot ids it advertises do not move when a bar is appended.
+      const next = buildPlotLayout(normalizePlots(plots))
+      state.plotSpecs = next.specs
+      state.plotCount = next.plots.length
+      Object.assign(lookup, buildLookup(candleTimes))
+      return true
+    }
   }
 }
 
