@@ -366,6 +366,55 @@ export async function loadStudyBars ({ market, symbol, timeframe, limit, exchang
   return rows.map(toPineBar).filter(Boolean)
 }
 
+/**
+ * Periods a script may ask for that the endpoint has no series for, and the
+ * series that can be aggregated up into them.
+ *
+ * Pine's `request.security` accepts any bar length, and scripts use periods a
+ * venue does not publish: a CPR study reads 25 minutes, which no exchange
+ * serves. Refusing it leaves every value the study derives from it `na`, and a
+ * study that is 90 % derived from a higher timeframe then draws nothing at all.
+ * Five 5-minute bars are exactly one 25-minute bar, so it is answered instead.
+ */
+const AGGREGATED_TIMEFRAMES = {
+  // Keyed by the token the runtime reports, which is Pine's own spelling: an
+  // `input.timeframe("25")` arrives as `"25"`, not `"25m"`.
+  25: { from: '5m', factor: 5 }
+}
+
+/**
+ * Fold bars of a shorter period into one of a longer period.
+ *
+ * The first bar's open and the last bar's close are the honest open and close of
+ * the combined interval; the extremes are the extremes of the pieces; the volume
+ * is their sum. The timestamp is the first piece's, so the series lines up with
+ * the chart's own bars the way an exchange-published series would.
+ */
+function aggregateBars (bars, factor) {
+  const out = []
+  for (let i = 0; i + factor <= bars.length; i += factor) {
+    const group = bars.slice(i, i + factor)
+    let high = -Infinity
+    let low = Infinity
+    let volume = 0
+    for (const bar of group) {
+      if (Number.isFinite(bar.high)) high = Math.max(high, bar.high)
+      if (Number.isFinite(bar.low)) low = Math.min(low, bar.low)
+      volume += Number(bar.volume) || 0
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)) continue
+    out.push({
+      time: group[0].time,
+      open: group[0].open,
+      high,
+      low,
+      close: group[group.length - 1].close,
+      volume
+    })
+  }
+  return out
+}
+
 /** Whether the bars endpoint can answer for this period. */
 function isServableTimeframe (timeframe) {
   // Not upper-cased: `1M` is a month in Pine and `1m` is a minute in the
@@ -490,7 +539,22 @@ export async function loadSeries ({
       // `unsupportedTimeframe` and take the whole study down, when only the
       // lines that read this period are unknown. Pine's own `request.security`
       // returns `na` in that case, and these scripts already handle `na`.
-      if (!isServableTimeframe(requested)) return Promise.resolve([])
+      if (!isServableTimeframe(requested)) {
+        const recipe = AGGREGATED_TIMEFRAMES[String(requested).trim()]
+        if (!recipe) return Promise.resolve([])
+        const load = loadBars || loadStudyBars
+        // Enough of the shorter period to cover the same span the chart asked
+        // for; the factor is how many pieces make one bar of the longer one.
+        return load({
+          market,
+          symbol,
+          timeframe: recipe.from,
+          limit: Math.min(wanted * recipe.factor, 20000),
+          exchangeId,
+          marketType,
+          instrumentId
+        }).then((pieces) => aggregateBars(pieces, recipe.factor))
+      }
       const args = {
         market,
         symbol,
@@ -950,8 +1014,11 @@ function buildPlotLayout (series) {
     plots.push({ id: plotId, type: 'line' })
     specs.push({ values: plot.values })
     styles[plotId] = { title: label }
+    // A hidden plot stays in the table -- a `fill` names it by title and reads
+    // its values -- but the library is told not to paint it. Drawing it would
+    // add a line the author put `display=display.none` on deliberately.
     defaults.styles[plotId] = {
-      visible: true,
+      visible: !plot.hidden,
       ...(plot.style ? { ...plot.style } : { plottype: 0 }),
       color: plot.color || '#2962FF',
       linewidth: 1

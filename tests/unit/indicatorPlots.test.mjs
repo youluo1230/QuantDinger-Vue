@@ -954,7 +954,10 @@ describe('a study that reads a period this deployment cannot serve', () => {
     // Monthly candles are not in the stored timeframes, and a script that reads
     // them must still draw the rest of itself. The loader answers with no bars,
     // which Pine already handles as `na`.
-    assert.match(source, /if \(!isServableTimeframe\(requested\)\) return Promise\.resolve\(\[\]\)/)
+    // A period the deployment has no series for is answered with no bars, so
+    // only the lines that read it come out `na` instead of the study failing.
+    assert.match(source, /if \(!isServableTimeframe\(requested\)\)/)
+    assert.match(source, /if \(!recipe\) return Promise\.resolve\(\[\]\)/)
     assert.match(source, /const SERVICEABLE_TIMEFRAMES = new Set\(/)
     // `1M` is a month in Pine and `1m` is a minute in the endpoint: the set has to
     // be spelled the endpoint's way and compared without folding the case, or a

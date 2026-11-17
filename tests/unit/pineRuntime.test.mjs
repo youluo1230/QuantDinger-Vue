@@ -103,6 +103,41 @@ describe('plotsFromPine', () => {
     ])
   })
 
+  it('keeps a series the author sent to the data window, out of the pane', () => {
+    // `display.data_window` is a count meant for inspection, not a drawing:
+    // Pine leaves the pane alone and shows the number in the data window. These
+    // scripts use it 161 times, so painting them adds lines nobody asked for --
+    // but the series still has to exist, because `fill` reads it by title.
+    const out = plotsFromPine({
+      Count: {
+        title: 'Count',
+        options: { display: 'data_window' },
+        data: [{ value: 1 }, { value: 2 }]
+      },
+      Status: {
+        title: 'Status',
+        options: { display: 'status_line' },
+        data: [{ value: 3 }]
+      },
+      Hidden: {
+        title: 'Hidden',
+        options: { display: 'none' },
+        data: [{ value: 4 }]
+      },
+      Drawn: {
+        title: 'Drawn',
+        options: { display: 'pane' },
+        data: [{ value: 5 }]
+      }
+    })
+    assert.deepEqual(out.map(plot => [plot.name, plot.hidden === true]), [
+      ['Count', true],
+      ['Status', true],
+      ['Hidden', true],
+      ['Drawn', false]
+    ])
+  })
+
   it('drops the drawing collections the study contract cannot express', () => {
     const out = plotsFromPine({
       __labels__: { data: [{ value: 1 }] },

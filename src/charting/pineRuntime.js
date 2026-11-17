@@ -126,6 +126,12 @@ export function plotsFromPine (plots) {
     const name = plotName(kind, key, plot)
     if (!name) continue
 
+    // `display = display.none` keeps a series out of the pane, but a `fill`
+    // names it by title and reads its values, so the plot is registered with
+    // the chart and told not to paint. Dropping it here would take the fill
+    // down with it.
+    const hidden = isHiddenFromChart(options)
+
     if (kind === 'candle') {
       const candle = candleFromPine(name, rows, options)
       if (candle) out.push(candle)
@@ -171,10 +177,29 @@ export function plotsFromPine (plots) {
       // the same numbers drawn in ways that mean different things.
       style: lineStyleFor(style),
       overlay: options.overlay !== false,
+      ...(hidden ? { hidden: true } : {}),
       data
     })
   }
   return out
+}
+
+/**
+ * Whether the script asked the chart not to paint this plot.
+ *
+ * `display.none` and `display.data_window` both mean "not in the pane": the
+ * first hides the series outright, the second keeps it in the data window for
+ * inspection while leaving the chart clean. `status_line` is the same story --
+ * a number in the status line, not a drawing. Only `all` and `pane` put it on
+ * the chart, and a script that omits the argument gets the default, which is to
+ * draw. Plotting a `data_window` series adds a line the author hid on purpose;
+ * these scripts do it 161 times.
+ */
+const OFF_PANE_DISPLAY = new Set(['none', 'data_window', 'status_line'])
+
+function isHiddenFromChart (options) {
+  const display = options && typeof options === 'object' ? options.display : ''
+  return OFF_PANE_DISPLAY.has(String(display || '').trim().toLowerCase())
 }
 
 /**
