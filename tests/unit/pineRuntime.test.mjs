@@ -261,19 +261,17 @@ describe('scripts that import a library', () => {
     assert.deepEqual(values, [10, 11])
   })
 
-  it('names the library it cannot resolve instead of how the resolver works', async () => {
-    // The runtime's own wording -- `Import "x/y/1" could not be resolved: the
-    // import resolver returned no source` -- describes our plumbing, not the
-    // author's problem. What is true is that this build does not bundle it.
-    await assert.rejects(
-      runPineStudy({
-        code: '//@version=6\nindicator("z")\nimport Trendoscope/ZigzagLite/4 as zg\nplot(close)',
-        bars: bars(),
-        timeframe: '1h',
-        interval: '60'
-      }),
-      /does not bundle the Pine library Trendoscope\/ZigzagLite/
-    )
+  it('runs a script against a stand-in library instead of refusing it', async () => {
+    // The facade that would serve the real source is unreachable, so the members
+    // the script names are stubbed with `na`. The study draws; the parts leaning
+    // on the library come out blank rather than as a wrong number.
+    const out = await runPineStudy({
+      code: '//@version=6\nindicator("z")\nimport Trendoscope/ZigzagLite/4 as zg\nvar zg.Zigzag zz = zg.Zigzag.new()\nplot(close)',
+      bars: bars(),
+      timeframe: '1h',
+      interval: '60'
+    })
+    assert.equal(out.plots.length, 1)
   })
 
   it('runs a script with no import without asking the resolver', async () => {
@@ -461,9 +459,8 @@ describe('a script that imports a library this build does not bundle', () => {
       interval: '60'
     })
     assert.equal(out.plots.length, 1)
-    await assert.rejects(
-      runPineStudy({ code: BARE_IMPORT, bars: rows, timeframe: '1h', interval: '60' }),
-      /does not bundle/
-    )
+    // A script that calls a stub function still draws.
+    const stubbed = await runPineStudy({ code: BARE_IMPORT, bars: rows, timeframe: '1h', interval: '60' })
+    assert.equal(stubbed.plots.length, 1)
   })
 })

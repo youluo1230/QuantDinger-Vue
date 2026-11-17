@@ -1,6 +1,7 @@
 <template>
   <div class="tv-chart" :class="`tv-chart--${theme}`">
-    <div ref="chartHost" class="tv-chart__host" />
+    <div ref="chartHost" class="tv-chart__host" :class="{ 'tv-chart__host--active': hostSlot === 0 }" />
+    <div ref="chartHostSpare" class="tv-chart__host" :class="{ 'tv-chart__host--active': hostSlot === 1 }" />
     <div v-if="error" class="tv-chart__error">{{ error }}</div>
     <div v-else-if="indicatorError" class="tv-chart__warning">{{ indicatorError }}</div>
   </div>
@@ -65,6 +66,11 @@ export default {
       handle: null,
       error: '',
       indicatorError: '',
+      // Two host elements let the replacement chart paint before the old one is
+      // torn down. Rebuilding is unavoidable (the study registry is read once at
+      // mount), but the gap between `teardown` and `mount` is not: the new widget
+      // is built behind the old one and only then does the old one go.
+      hostSlot: 0,
       seriesCache: createSeriesCache(),
       // Bars, unlike the resolved plots, outlive a study rebuild: the same
       // symbol and timeframe answer every study the user checks and unchecks.
@@ -162,12 +168,18 @@ export default {
       })
       return items.join('|')
     },
-    async mount () {
+    /** The host element for a slot, so a rebuild can target the hidden one. */
+    hostFor (slot) {
+      return slot === 1 ? this.$refs.chartHostSpare : this.$refs.chartHost
+    },
+    async mount (slot = this.hostSlot) {
       if (this.handle) return
       this.error = ''
+      const container = this.hostFor(slot)
+      if (!container) return
       try {
         this.handle = await mountTradingViewChart({
-          container: this.$refs.chartHost,
+          container,
           market: this.market,
           symbol: this.symbol,
           exchangeId: this.exchangeId,
@@ -439,9 +451,45 @@ export default {
         this.handle = null
       }
     },
+    /**
+     * Replace the widget without showing the page a blank chart.
+     *
+     * `teardown()` then `mount()` leaves an empty pane for as long as the new
+     * widget takes to build, which is what the flicker was. The next widget is
+     * built into the hidden host instead and the visible host is only retired
+     * once the replacement reports ready -- so the old chart stays on screen
+     * until the new one can cover it.
+     */
     async remount () {
-      this.teardown()
-      await this.mount()
+      const previous = this.handle
+      const previousSlot = this.hostSlot
+      const nextSlot = previousSlot === 0 ? 1 : 0
+      // `mount` refuses while a handle exists, so the old one is detached from
+      // the field first and destroyed by hand if the new mount fails.
+      this.handle = null
+      try {
+        await this.mount(nextSlot)
+      } catch (err) {
+        this.handle = previous
+        this.hostSlot = previousSlot
+        throw err
+      }
+      if (!this.handle) {
+        this.handle = previous
+        this.hostSlot = previousSlot
+        return
+      }
+      // The replacement is mounted and its container is the one the template now
+      // marks active; only after that does the old widget stop drawing.
+      this.hostSlot = nextSlot
+      await this.$nextTick()
+      try {
+        previous?.destroy()
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('previous chart teardown threw', err)
+        }
+      }
     }
   }
 }
@@ -455,8 +503,20 @@ export default {
   min-height: 420px;
 
   &__host {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
+    // Hidden rather than unmounted: the replacement chart has to be able to
+    // build at full size before it is shown, or it lays out at a wrong width and
+    // then jumps. Only the active host takes clicks.
+    visibility: hidden;
+    pointer-events: none;
+
+    &--active {
+      visibility: visible;
+      pointer-events: auto;
+    }
   }
 
   &__warning {

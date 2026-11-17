@@ -326,7 +326,7 @@ export async function readPineInputs ({ code }) {
     // fails to transpile, and that has nothing to do with which inputs the
     // script declares, so the empty stub keeps the settings panel working.
     if (IMPORT_RE.test(source)) {
-      await indicator.resolveImports(pineImportResolver({ allowMissing: true }))
+      await indicator.resolveImports(pineImportResolver({ allowMissing: true, source }))
     }
     indicator.prepare()
     return toInputSpecs(indicator.getInputsMeta())
@@ -434,7 +434,9 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
     // cannot be run, only skipped -- and the failure is translated so the author
     // reads which library is missing instead of how our resolver works.
     try {
-      if (IMPORT_RE.test(source)) await indicator.resolveImports(pineImportResolver())
+      // Lenient here as well: a stub keeps the study drawable, and the parts that
+      // lean on the missing library come out `na` instead of taking the pane down.
+      if (IMPORT_RE.test(source)) await indicator.resolveImports(pineImportResolver({ allowMissing: true, source }))
       indicator.prepare()
     } catch (error) {
       throw translateImportError(error, source)
@@ -462,7 +464,7 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
   // Installed only when the script imports something: an unimporting script
   // must not pay for a resolver call, and a broken resolver must never be able
   // to break a script that does not need one.
-  if (IMPORT_RE.test(source)) runtime.setImportResolver(pineImportResolver())
+  if (IMPORT_RE.test(source)) runtime.setImportResolver(pineImportResolver({ allowMissing: true, source }))
   let context
   let repairedFor = ''
   try {
@@ -490,7 +492,9 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
       ticker,
       period
     )
-    if (IMPORT_RE.test(repaired.code)) retryRuntime.setImportResolver(pineImportResolver())
+    if (IMPORT_RE.test(repaired.code)) {
+      retryRuntime.setImportResolver(pineImportResolver({ allowMissing: true, source: repaired.code }))
+    }
     context = await retryRuntime.run(retry)
     repairedFor = 'tuple-destructuring'
   }

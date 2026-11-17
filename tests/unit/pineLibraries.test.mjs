@@ -16,7 +16,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { librarySource, pineImportResolver, vendoredLibraries } from '../../src/charting/pineLibraries.js'
+import { librarySource, libraryStub, pineImportResolver, vendoredLibraries } from '../../src/charting/pineLibraries.js'
 
 describe('librarySource', () => {
   it('answers for the ta library at any version', () => {
@@ -91,5 +91,50 @@ describe('the vendored source', () => {
     for (const field of ['open', 'close', 'volume']) {
       assert.match(source, new RegExp(`request\\.security\\(syminfo\\.tickerid, timeframe, ${field}\\)`))
     }
+  })
+})
+
+describe('libraryStub', () => {
+  const script = [
+    '//@version=6',
+    'indicator("x")',
+    'import orenluxy/LuxyEnergyIndex/1 as LEI',
+    'import Trendoscope/ohlc/3 as o',
+    'v = LEI.lei(close)',
+    'z = LEI.getZone(v)',
+    'arr = array.new<o.OHLC>()'
+  ].join('\n')
+
+  it('stubs a function the script calls', () => {
+    const stub = libraryStub(script, 'orenluxy/LuxyEnergyIndex/1')
+    assert.match(stub, /^\/\/@version=6/m)
+    assert.match(stub, /export lei\(\) => na/)
+    assert.match(stub, /export getZone\(\) => na/)
+  })
+
+  it('stubs a type the script declares a collection of', () => {
+    // `array<o.OHLC>` is a parse error without the type, not an `na`.
+    const stub = libraryStub(script, 'Trendoscope/ohlc/3')
+    assert.match(stub, /export type OHLC/)
+  })
+
+  it('declares nothing for a library the script does not import', () => {
+    const stub = libraryStub('//@version=6\nindicator("x")\nplot(close)', 'anything/at/all')
+    // The library name in the declaration is the `user/library` stem: the
+    // version is a release of that library, not a different library.
+    assert.equal(stub.trim(), '//@version=6\nlibrary("anything/at")')
+  })
+
+  it('puts a nested receiver ahead of the field read from it', () => {
+    // `zigzag.flags.newPivot` reads `newPivot` off `flags`. A field order that
+    // puts the leaf first leaves the receiver `na`, and reading a property off
+    // `na` is the throw.
+    const stub = libraryStub(
+      '//@version=6\nindicator("x")\nimport a/b/1 as zg\nvar zg.Zigzag z = zg.Zigzag.new()\nplot(z.flags.newPivot ? 1 : 0)',
+      'a/b/1'
+    )
+    const fields = stub.split('\n').filter(line => line.startsWith('    '))
+    assert.ok(fields.length >= 1, stub)
+    assert.match(fields[0], /flags/)
   })
 })

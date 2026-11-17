@@ -146,7 +146,7 @@ test('studies are registered and then drawn, and a rebuild keeps the viewport', 
 
   // Drawing is deferred to the ready callback: before that, `createStudy`
   // resolves to null and the study silently never appears.
-  const mount = component.slice(component.indexOf('async mount ()'), component.indexOf('async reconcileStudies'))
+  const mount = component.slice(component.indexOf('async mount ('), component.indexOf('async reconcileStudies'))
   assert.match(mount, /onChartReady/)
   assert.doesNotMatch(mount, /^\s+await this\.drawStudies\(\)/m)
 
@@ -201,4 +201,23 @@ test('a rebuilt chart repaints from memory instead of re-downloading its bars', 
   assert.match(datafeed, /toleranceMs/)
   assert.match(host, /barStore/)
   assert.match(component, /barStore: createBarStore\(\)/)
+})
+
+test('a rebuild paints the replacement before it removes the chart on screen', () => {
+  // Teardown-then-mount leaves an empty pane for as long as the widget takes to
+  // build, which is the flash. The replacement is built into a second host and
+  // the visible one is retired only afterwards.
+  assert.match(component, /hostSlot/)
+  assert.match(component, /chartHostSpare/)
+  const remount = component.slice(component.indexOf('async remount ()'))
+  assert.match(remount, /this\.handle = null/, 'mount() refuses to run while a handle exists')
+  assert.match(remount, /await this\.mount\(nextSlot\)/)
+  // The slot is switched only once the new widget is up, and the old one is
+  // destroyed after that.
+  assert.match(remount, /this\.hostSlot = nextSlot[\s\S]*previous\?\.destroy\(\)/)
+  // If the replacement fails to build, the old chart stays visible: a failed
+  // rebuild must not leave the user with nothing.
+  assert.match(remount, /this\.handle = previous/)
+  assert.match(component, /visibility: hidden/)
+  assert.match(component, /&--active/)
 })
