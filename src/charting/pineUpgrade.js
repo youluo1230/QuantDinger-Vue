@@ -190,6 +190,18 @@ function matchParen (source, open) {
   return -1
 }
 
+/**
+ * Price and volume series v4 allowed as the default of `input(close, ...)`.
+ *
+ * The runtime's `input.source` accepts exactly these, so a bare identifier in
+ * this set is a source, not a string. Getting that wrong is not cosmetic: v4
+ * wrote `input(close, title="Source")` to mean "let the user pick the price
+ * series", and reading it as a string emits `input.string(close)`, which the
+ * runtime rejects because `close` is `series float` and the parameter wants
+ * `const string`.
+ */
+const SOURCE_DEFAULTS = new Set(['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4', 'volume'])
+
 /** The typed input call a v4 `input()` default value implies. */
 function inputKindFor (defaultText) {
   const text = String(defaultText || '').trim()
@@ -197,6 +209,7 @@ function inputKindFor (defaultText) {
   if (/^-?\d+$/.test(text)) return 'int'
   if (/^-?\d*\.\d+(?:e[-+]?\d+)?$/i.test(text) || /^-?\d+e[-+]?\d+$/i.test(text)) return 'float'
   if (/^#[0-9a-fA-F]{6}(\w\w)?$/.test(text)) return 'color'
+  if (SOURCE_DEFAULTS.has(text)) return 'source'
   return 'string'
 }
 

@@ -76,6 +76,15 @@ describe('pre-v5 upgrade', () => {
     assert.doesNotMatch(code, /=\s*input\(/)
   })
 
+  it('reads a price series default as a source, not as a string', () => {
+    // v4 wrote `input(close, title="Source")` to offer a price picker. Treated
+    // as a string that becomes `input.string(close)`, which the runtime refuses:
+    // `close` is `series float` and the parameter wants `const string`.
+    const { code } = upgradeLegacyPine('//@version=4\nstudy("x")\nsrc = input(close, title="Source")\nplot(src)')
+    assert.match(code, /input\.source\(title="Source", defval=close\)/)
+    assert.doesNotMatch(code, /input\.string\(close/)
+  })
+
   it('reads a bare tr as the value the newer dialect exposes', () => {
     // v4 spells the true range as a bare name; a call-only rewrite left the
     // scripts that do this failing on `Undeclared identifier "tr"`.
