@@ -8,7 +8,7 @@
 
 <script>
 import { mountTradingViewChart } from '@/charting/tradingview'
-import { createSeriesCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
+import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
 
 /**
  * TradingView Charting Library surface.
@@ -19,6 +19,25 @@ import { createSeriesCache, resolveCustomIndicators } from '@/charting/indicator
  * `indicatorPlots.js`. Nothing about a study travels over the network, which is
  * why a study can be redrawn as often as the author saves.
  */
+/**
+ * A short, stable fingerprint of a script's text.
+ *
+ * Only used to notice that code changed, so a cheap FNV-1a is enough: this runs
+ * on every render for every study, and a cryptographic digest over a 2000-line
+ * script is time the page does not have. Length is mixed in by the caller, which
+ * covers the one weakness a short hash has against accidental collisions.
+ */
+function codeFingerprint (code) {
+  const text = String(code || '')
+  if (!text) return '0'
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(36)
+}
+
 export default {
   name: 'TradingViewChart',
   props: {
@@ -47,6 +66,12 @@ export default {
       error: '',
       indicatorError: '',
       seriesCache: createSeriesCache(),
+      // Bars, unlike the resolved plots, outlive a study rebuild: the same
+      // symbol and timeframe answer every study the user checks and unchecks.
+      barCache: createStudyBarCache(),
+      // The last study set this component actually rebuilt for; see the
+      // `indicators` watcher for why object identity cannot answer that.
+      lastIndicatorsSignature: '',
       positionLines: [],
       // The IDE resizes the mounted chart after a fullscreen change by calling
       // `chartRef.resize()`, a shape it inherited from the bundled canvas. The
@@ -76,8 +101,17 @@ export default {
       // once at mount, so a study that was not registered then cannot be drawn
       // later. The rebuild restores the visible range so it does not read as a
       // reload -- see `reconcileStudies`.
-      deep: true,
-      handler () {
+      //
+      // The signature is what decides, not object identity. The parent hands
+      // this prop over as the result of a method call, so every re-render of the
+      // page produces a fresh array with the same contents -- and a deep watch on
+      // object identity would treat each of those as a new study set, tearing
+      // down the widget and downloading the whole history again. That is what a
+      // request storm looks like from the network side.
+      handler (next) {
+        const signature = this.indicatorsSignature(next)
+        if (signature === this.lastIndicatorsSignature) return
+        this.lastIndicatorsSignature = signature
         this.reconcileStudies()
       }
     },
@@ -95,6 +129,31 @@ export default {
     this.teardown()
   },
   methods: {
+    /**
+     * A value that changes only when the study set really changes.
+     *
+     * Covers what the chart draws: which indicators, which code, which input
+     * values. A re-sorted but otherwise identical list has the same signature,
+     * because the chart draws the same lines either way.
+     */
+    indicatorsSignature (list) {
+      const items = (list || []).map(item => {
+        const params = item?.params && typeof item.params === 'object'
+          ? Object.keys(item.params).sort().map(key => `${key}=${item.params[key]}`).join(',')
+          : ''
+        return [
+          item?.indicatorId ?? item?.originalId ?? '',
+          item?.name || '',
+          params,
+          String(item?.code || '').length,
+          // A hash of the code rather than the code itself: the signature is
+          // compared on every render, and a 2000-line script string would make
+          // that comparison the expensive part.
+          codeFingerprint(item?.code)
+        ].join(':')
+      })
+      return items.join('|')
+    },
     async mount () {
       if (this.handle) return
       this.error = ''
@@ -157,6 +216,9 @@ export default {
       if (!this.handle) return
       const viewport = this.captureViewport()
       this.seriesCache.clear()
+      // `barCache` is deliberately kept: rebuilding replaces the studies, not
+      // the market data they run over, and re-downloading it here is what made
+      // checking a box trigger another full history fetch.
       await this.remount()
       this.restoreViewport(viewport)
     },
@@ -206,7 +268,8 @@ export default {
         market: this.market,
         symbol: this.symbol,
         timeframe: this.timeframe,
-        cache: this.seriesCache
+        cache: this.seriesCache,
+        barCache: this.barCache
       })
       this.reportFailures(failures)
       const chart = this.handle?.widget?.activeChart?.()
@@ -245,7 +308,8 @@ export default {
         market: this.market,
         symbol: this.symbol,
         timeframe: this.timeframe,
-        cache: this.seriesCache
+        cache: this.seriesCache,
+        barCache: this.barCache
       })
       this.reportFailures(failures)
       // Registered here, drawn by `drawStudies` once the widget reports ready.

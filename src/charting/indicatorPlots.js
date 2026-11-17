@@ -319,6 +319,55 @@ export async function loadStudyBars ({ market, symbol, timeframe, limit, exchang
 }
 
 /**
+ * A bar cache shared by every study on a chart, keyed by what identifies the
+ * series rather than by which study asked.
+ *
+ * Without it each study fetches its own copy: five checked indicators meant five
+ * 1500-bar downloads of the same symbol and timeframe, which is what made the
+ * chart look like it was flooding the network on load. The bars are identical
+ * for every study on a chart, so one fetch serves them all.
+ *
+ * In-flight requests are shared too. Studies are resolved in a burst, so without
+ * that the first calls all miss the empty cache before any of them has answered.
+ */
+export function createStudyBarCache () {
+  const settled = new Map()
+  const pending = new Map()
+  return {
+    /**
+     * The bars for this series, fetching once however many callers ask.
+     *
+     * A failed fetch is dropped from the cache so the next study retries it
+     * rather than inheriting a rejection that had nothing to do with its script.
+     */
+    async load (args) {
+      const key = [args.market, args.symbol, args.timeframe, args.exchangeId || '', args.marketType || '', args.instrumentId || '', args.limit].join('|')
+      if (settled.has(key)) return settled.get(key)
+      if (pending.has(key)) return pending.get(key)
+      const inflight = loadStudyBars(args)
+        .then((bars) => {
+          settled.set(key, bars)
+          pending.delete(key)
+          return bars
+        })
+        .catch((err) => {
+          pending.delete(key)
+          throw err
+        })
+      pending.set(key, inflight)
+      return inflight
+    },
+    clear () {
+      settled.clear()
+      pending.clear()
+    },
+    get size () {
+      return settled.size
+    }
+  }
+}
+
+/**
  * Compile and run one Pine indicator against a chart window.
  *
  * Returns `{ plots, signals, candleTimes }` in the same shape the backend
@@ -342,21 +391,23 @@ export async function loadSeries ({
   name = '',
   exchangeId = '',
   marketType = '',
-  instrumentId = ''
+  instrumentId = '',
+  bars: barsIn = null,
+  loadBars = null
 }) {
   const source = String(code || '')
   if (!source.trim()) {
     throw new Error(`${name || `Indicator ${indicatorId}`} has no Pine source to run`)
   }
-  const bars = await loadStudyBars({
-    market,
-    symbol,
-    timeframe,
-    limit: Math.min(Number(limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS),
-    exchangeId,
-    marketType,
-    instrumentId
-  })
+  // A caller that already holds this series hands it over: every study on a
+  // chart runs over the same bars, so re-downloading them per study is work
+  // with no information in it.
+  const wanted = Math.min(Number(limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS)
+  const bars = Array.isArray(barsIn) && barsIn.length
+    ? barsIn
+    : await (loadBars
+      ? loadBars({ market, symbol, timeframe, limit: wanted, exchangeId, marketType, instrumentId })
+      : loadStudyBars({ market, symbol, timeframe, limit: wanted, exchangeId, marketType, instrumentId }))
   if (!bars.length) {
     throw new Error(`No bars for ${symbol} ${timeframe}`)
   }
@@ -374,17 +425,22 @@ export async function loadSeries ({
     timeframe,
     interval: pineIntervalFor(timeframe),
     params,
-    loadBars: ({ timeframe: requested }) => loadStudyBars({
-      market,
-      symbol,
+    loadBars: (security) => {
       // The runtime names timeframes the Pine way; the endpoint names them the
       // chart way, so the token is translated before the request is built.
-      timeframe: timeframeForPineInterval(requested),
-      limit: Math.min(Number(limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS),
-      exchangeId,
-      marketType,
-      instrumentId
-    })
+      const args = {
+        market,
+        symbol,
+        timeframe: timeframeForPineInterval(security.timeframe),
+        limit: wanted,
+        exchangeId,
+        marketType,
+        instrumentId
+      }
+      // The same shared loader the primary series used, so two studies reading
+      // the same higher timeframe download it once between them.
+      return loadBars ? loadBars(args) : loadStudyBars(args)
+    }
   })
   return {
     plots: normalizePlots(result.plots),
@@ -893,16 +949,46 @@ function normaliseLocation (location) {
  * ordered list with no way back to the bars they belong to; see
  * `buildBarTimeIndex`.
  */
-export async function resolveCustomIndicators ({ indicators, market, symbol, timeframe, cache, exchangeId = '', marketType = '', instrumentId = '' }) {
+export async function resolveCustomIndicators ({ indicators, market, symbol, timeframe, cache, exchangeId = '', marketType = '', instrumentId = '', barCache = null }) {
   const built = []
   const failures = []
-  for (const indicator of indicators || []) {
+  const list = indicators || []
+  // Every study on this chart runs over one series, so fetch it once up front
+  // when the caller provided a shared cache. Resolving the studies afterwards
+  // needs no network at all for the chart timeframe.
+  // One fetch sized for the largest study on the chart: a shorter series would
+  // truncate the study that asked for more, and fetching per study was the
+  // flood. No studies means no request at all.
+  const widest = list.reduce(
+    (widestSoFar, item) => Math.max(widestSoFar, Math.min(Number(item.limit) || DEFAULT_STUDY_BARS, MAX_STUDY_BARS)),
+    0
+  )
+  const sharedBars = barCache && widest > 0
+    ? await barCache.load({
+      market,
+      symbol,
+      timeframe,
+      limit: widest,
+      exchangeId,
+      marketType,
+      instrumentId
+    })
+    : null
+  const loadBars = barCache
+    ? (args) => barCache.load(args)
+    : null
+  // Resolve every study at once. They share one series now, so the only work
+  // left per study is evaluating its script -- which is CPU, and CPU that the
+  // browser can interleave instead of waiting out one script before starting the
+  // next. The order of `built` still follows the checked set, because the
+  // studies are collected by index rather than by completion.
+  const resolved = await Promise.all(list.map(async (indicator) => {
     const indicatorId = indicatorIdOf(indicator)
     const inlineCode = String(indicator.code || '')
     // An editor draft has no saved row to key on, so its own text is the
     // identity. Hashing keeps the key short and stops a long script from
     // bloating the cache map.
-    if (!indicatorId && !inlineCode.trim()) continue
+    if (!indicatorId && !inlineCode.trim()) return null
     const revision = inlineCode.trim() ? draftRevision(inlineCode) : ''
     const key = seriesKey({ indicatorId, market, symbol, timeframe, revision })
     let loaded = cache.get(key)
@@ -922,26 +1008,34 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
           name: indicator.name || indicator.display_name || '',
           exchangeId,
           marketType,
-          instrumentId
+          instrumentId,
+          bars: sharedBars,
+          loadBars
         })
       } catch (err) {
         // One indicator that fails to run -- a Pine error, or a symbol it has
         // no data for -- must not take the chart down with it. The library
         // draws the bars and simply omits this study.
-        failures.push({ indicatorId, reason: err?.message || String(err) })
-        continue
+        return { failure: { indicatorId, reason: err?.message || String(err) } }
       }
       cache.set(key, loaded)
     }
     const series = loaded?.plots
-    if (!series || !series.length) continue
-    built.push(buildCustomIndicator({
-      indicatorId,
-      name: indicator.name || indicator.display_name || indicator.title,
-      series,
-      candleTimes: loaded?.candleTimes,
-      key
-    }))
+    if (!series || !series.length) return null
+    return {
+      study: buildCustomIndicator({
+        indicatorId,
+        name: indicator.name || indicator.display_name || indicator.title,
+        series,
+        candleTimes: loaded?.candleTimes,
+        key
+      })
+    }
+  }))
+  for (const entry of resolved) {
+    if (!entry) continue
+    if (entry.failure) failures.push(entry.failure)
+    else built.push(entry.study)
   }
   return { indicators: built, failures }
 }

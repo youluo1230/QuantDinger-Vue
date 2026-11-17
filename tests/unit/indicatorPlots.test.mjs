@@ -730,3 +730,172 @@ describe('createSeriesCache', () => {
     assert.equal(cache.size, 0)
   })
 })
+
+describe('createStudyBarCache', () => {
+  /**
+   * Install a request stub that answers with `bars` and counts its calls.
+   *
+   * The count is the assertion that matters: a cache that is not consulted looks
+   * identical on screen, so only the call count distinguishes "one download
+   * shared by five studies" from "five downloads".
+   */
+  function countRequests (bars) {
+    const calls = []
+    globalThis.__qdRequest = async (options) => {
+      calls.push(options.params)
+      return { data: bars }
+    }
+    return calls
+  }
+
+  const bars = Array.from({ length: 3 }, (_unused, index) => ({
+    time: 1700000000 + index * 3600,
+    open: 1,
+    high: 2,
+    low: 0.5,
+    close: 1.5,
+    volume: 10
+  }))
+
+  it('downloads one series once however many studies ask for it', async () => {
+    const calls = countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    const args = { market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 }
+    const [first, second, third] = await Promise.all([
+      cache.load(args), cache.load(args), cache.load(args)
+    ])
+    assert.equal(calls.length, 1)
+    assert.equal(first.length, 3)
+    // The same array, not three equal copies: every study runs over one series.
+    assert.equal(first, second)
+    assert.equal(second, third)
+  })
+
+  it('downloads again for a different timeframe', async () => {
+    const calls = countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 })
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1D', limit: 1500 })
+    assert.equal(calls.length, 2)
+  })
+
+  it('retries a failed download instead of caching the failure', async () => {
+    let attempts = 0
+    globalThis.__qdRequest = async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('network down')
+      return { data: bars }
+    }
+    const cache = plots.createStudyBarCache()
+    const args = { market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 }
+    await assert.rejects(() => cache.load(args), /network down/)
+    const recovered = await cache.load(args)
+    assert.equal(attempts, 2)
+    assert.equal(recovered.length, 3)
+  })
+
+  it('is keyed per venue, so spot and perpetual never share a series', async () => {
+    const calls = countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '4H', limit: 1500, marketType: 'spot' })
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '4H', limit: 1500, marketType: 'swap' })
+    assert.equal(calls.length, 2)
+  })
+
+  it('clears', async () => {
+    countRequests(bars)
+    const cache = plots.createStudyBarCache()
+    await cache.load({ market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H', limit: 1500 })
+    assert.equal(cache.size, 1)
+    cache.clear()
+    assert.equal(cache.size, 0)
+  })
+})
+
+describe('resolveCustomIndicators', () => {
+  it('fetches the shared series once for a whole set of studies', async () => {
+    // Five checked indicators used to mean five 1500-bar downloads of the same
+    // symbol, which is what made the first load look like a request storm.
+    const calls = []
+    globalThis.__qdRequest = async (options) => {
+      calls.push(options.params)
+      return {
+        data: Array.from({ length: 5 }, (_unused, index) => ({
+          time: 1700000000 + index * 3600,
+          open: 1,
+          high: 2,
+          low: 0.5,
+          close: 1.5,
+          volume: 10
+        }))
+      }
+    }
+    globalThis.__qdPine = {
+      runPineStudy: async ({ code }) => ({
+        plots: [{ name: code, values: [1, 2, 3, 4, 5], type: 'line' }],
+        signals: [],
+        candleTimes: [1700000000000, 1700003600000, 1700007200000, 1700010800000, 1700014400000]
+      })
+    }
+    const indicators = Array.from({ length: 5 }, (_unused, index) => ({
+      indicatorId: index + 1,
+      name: `study ${index + 1}`,
+      code: `//@version=6\nindicator("s${index + 1}")\nplot(close)`
+    }))
+    const result = await plots.resolveCustomIndicators({
+      indicators,
+      market: 'Crypto',
+      symbol: 'BTC/USDT',
+      timeframe: '1H',
+      cache: plots.createSeriesCache(),
+      barCache: plots.createStudyBarCache()
+    })
+    assert.equal(calls.length, 1, 'one download for five studies')
+    assert.equal(result.failures.length, 0)
+    assert.equal(result.indicators.length, 5)
+    // The checked order survives the parallel resolve.
+    assert.deepEqual(
+      result.indicators.map(item => item.name),
+      ['study 1', 'study 2', 'study 3', 'study 4', 'study 5']
+    )
+  })
+
+  it('sizes the download for the widest study in the set', async () => {
+    const calls = []
+    globalThis.__qdRequest = async (options) => {
+      calls.push(options.params)
+      return { data: [{ time: 1700000000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 }] }
+    }
+    await plots.resolveCustomIndicators({
+      indicators: [
+        { indicatorId: 1, name: 'a', code: '//@version=6\nindicator("a")\nplot(close)' },
+        { indicatorId: 2, name: 'b', code: '//@version=6\nindicator("b")\nplot(close)', limit: 3000 }
+      ],
+      market: 'Crypto',
+      symbol: 'BTC/USDT',
+      timeframe: '1H',
+      cache: plots.createSeriesCache(),
+      barCache: plots.createStudyBarCache()
+    })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].limit, 3000)
+  })
+
+  it('asks for nothing when there are no studies', async () => {
+    const calls = []
+    globalThis.__qdRequest = async (options) => {
+      calls.push(options.params)
+      return { data: [] }
+    }
+    const result = await plots.resolveCustomIndicators({
+      indicators: [],
+      market: 'Crypto',
+      symbol: 'BTC/USDT',
+      timeframe: '1H',
+      cache: plots.createSeriesCache(),
+      barCache: plots.createStudyBarCache()
+    })
+    assert.equal(calls.length, 0)
+    assert.deepEqual(result, { indicators: [], failures: [] })
+  })
+})

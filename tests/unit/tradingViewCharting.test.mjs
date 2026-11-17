@@ -117,8 +117,12 @@ test('the vendored library ships next to the app so its licence travels with it'
   assert.ok(bundles.length > 1000)
 })
 
-test('saved indicators are replayed from backend output, not evaluated in the browser', () => {
-  assert.match(component, /import \{ createSeriesCache, resolveCustomIndicators \} from '@\/charting\/indicatorPlots'/)
+test('saved indicators are resolved by the charting module, not by this component', () => {
+  // The import list is asserted by name so that adding a collaborator here
+  // cannot silently drop one of them.
+  assert.match(component, /from '@\/charting\/indicatorPlots'/)
+  assert.match(component, /\bcreateSeriesCache\b/)
+  assert.match(component, /\bresolveCustomIndicators\b/)
   assert.match(component, /customIndicators: \(\) => this\.loadIndicators\(\)/)
   // One broken indicator must not blank the chart, so it is reported separately.
   assert.match(component, /indicatorError/)
@@ -150,4 +154,34 @@ test('studies are registered and then drawn, and a rebuild keeps the viewport', 
   const reconcile = component.slice(component.indexOf('async reconcileStudies'), component.indexOf('captureViewport () {'))
   assert.match(reconcile, /captureViewport/)
   assert.match(reconcile, /restoreViewport/)
+})
+
+test('a re-render with the same studies does not rebuild the chart', () => {
+  // The parent passes this prop as a method call, so identity changes on every
+  // render. A watcher keyed on identity therefore remounts the widget -- and
+  // re-downloads the history -- for a page that changed nothing but a counter.
+  assert.match(component, /lastIndicatorsSignature/)
+  assert.match(component, /if \(signature === this\.lastIndicatorsSignature\) return/)
+  assert.match(component, /indicatorsSignature \(list\)/)
+  // A fingerprint rather than the full source: the signature is compared on
+  // every render, so it cannot be O(script length).
+  assert.match(component, /codeFingerprint\(item\?\.code\)/)
+  assert.doesNotMatch(
+    component,
+    /indicators: \{\s*\/\/[\s\S]{0,400}?deep: true/,
+    'a deep watch on the array makes every re-render a rebuild'
+  )
+})
+
+test('the study bar cache survives a rebuild but the resolved plots do not', () => {
+  // Bars are the market's answer, not the study's: rebuilding replaces the
+  // studies, and re-fetching the same candles for a checkbox is the flood.
+  assert.match(component, /barCache: createStudyBarCache\(\)/)
+  assert.match(component, /this\.seriesCache\.clear\(\)/)
+  const reconcile = component.slice(
+    component.indexOf('async reconcileStudies ()'),
+    component.indexOf('/** The visible time range')
+  )
+  assert.match(reconcile, /this\.seriesCache\.clear\(\)/)
+  assert.doesNotMatch(reconcile, /this\.barCache\.clear\(\)/)
 })
