@@ -266,3 +266,32 @@ test('converted strategy metadata follows the resolved source market context', (
     /buildGeneratedMetadata \(ctx = \{\}\)[\s\S]*?const source = this\.resolveIndicatorConversionContext\(ctx\)[\s\S]*?source_indicator_instrument: source\.instrument[\s\S]*?last_run_config: lastRunConfig/
   )
 })
+
+test('picking an indicator to edit does not throw away what is drawn', () => {
+  // `selectEditorIndicator` used to assign `chartVisibleIndicatorIds = [id]`.
+  // That silently unchecked every other study -- and since the drawn set is what
+  // the chart watches, each pick rebuilt the chart and re-fetched its history.
+  const source = indicatorIdeSource
+  const start = source.indexOf('    selectEditorIndicator (rawId) {')
+  assert.ok(start > 0, 'selectEditorIndicator is still there')
+  const body = source.slice(start, source.indexOf('\n    },', start))
+
+  assert.doesNotMatch(
+    body,
+    /this\.chartVisibleIndicatorIds\s*=\s*\[id\]/,
+    'selection replaces the drawn set'
+  )
+  assert.match(body, /\(this\.chartVisibleIndicatorIds \|\| \[\]\)\.some\(/, 'selection checks whether it is already drawn')
+  assert.match(body, /\[\.\.\.\(this\.chartVisibleIndicatorIds \|\| \[\]\), id\]/, 'selection appends to the drawn set')
+})
+
+test('the chart only rebuilds when the studies really changed', () => {
+  // The chart is torn down and rebuilt to change its study set, and a rebuild
+  // re-fetches the bars. So the guard has to be on content, not on the array the
+  // parent happened to hand over.
+  const chart = fs.readFileSync(
+    fileURLToPath(new URL('../../src/components/TradingViewChart/index.vue', import.meta.url)),
+    'utf8'
+  )
+  assert.match(chart, /if \(this\.handle && signature === this\.lastIndicatorsSignature\) return/)
+})

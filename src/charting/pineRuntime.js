@@ -16,7 +16,7 @@
  * never downloads a Pine runtime.
  */
 
-import { pineImportResolver } from './pineLibraries.js'
+import { importPaths, missingLibraries, pineImportResolver } from './pineLibraries.js'
 import { repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
 
 /** Bars per study computation. Beyond this the cost stops being imperceptible. */
@@ -317,6 +317,17 @@ export async function readPineInputs ({ code }) {
   try {
     const { Indicator } = await import('pinets')
     const indicator = new Indicator(source)
+    // `prepare()` transpiles, and the transpiler refuses a script whose imports
+    // are not in hand -- it does not ask the resolver itself. Resolve first, or
+    // every importing script reports "Unresolved Pine Script import" here even
+    // when the library is vendored.
+    //
+    // Lenient: a vendored library that lacks a function the script calls still
+    // fails to transpile, and that has nothing to do with which inputs the
+    // script declares, so the empty stub keeps the settings panel working.
+    if (IMPORT_RE.test(source)) {
+      await indicator.resolveImports(pineImportResolver({ allowMissing: true }))
+    }
     indicator.prepare()
     return toInputSpecs(indicator.getInputsMeta())
   } catch (_error) {
@@ -370,6 +381,29 @@ export function toInputSpecs (meta) {
 }
 
 /**
+ * Restate an import failure in terms the author can act on.
+ *
+ * The runtime reports `Import "x/y/1" could not be resolved: the import
+ * resolver returned no source`, which describes our plumbing rather than the
+ * problem. What is actually true is narrower and useful: this build does not
+ * bundle that library, so the study cannot be drawn -- and every other study on
+ * the chart is unaffected.
+ */
+function translateImportError (error, source) {
+  const message = String(error && error.message || error)
+  if (!message.includes('could not be resolved')) return error
+  const missing = missingLibraries(importPaths(source))
+  if (!missing.length) return error
+  const next = new Error(
+    `This build does not bundle the Pine library ${missing.join(', ')}, so the study cannot run. ` +
+    'It is skipped; other studies still draw.'
+  )
+  next.name = 'PineLibraryMissing'
+  next.missingLibraries = missing
+  return next
+}
+
+/**
  * Run a Pine script over the supplied bars and return drawable plots.
  *
  * `params` is keyed by the input titles `readPineInputs` reported, which is
@@ -394,7 +428,17 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
   const indicator = new Indicator(source)
   const overrides = normaliseInputOverrides(params)
   if (overrides) {
-    indicator.prepare()
+    // Same ordering trap as `readPineInputs`: `prepare()` is what transpiles,
+    // and it throws on an unresolved import instead of consulting the resolver.
+    // The strict resolver is right here -- a library this build does not carry
+    // cannot be run, only skipped -- and the failure is translated so the author
+    // reads which library is missing instead of how our resolver works.
+    try {
+      if (IMPORT_RE.test(source)) await indicator.resolveImports(pineImportResolver())
+      indicator.prepare()
+    } catch (error) {
+      throw translateImportError(error, source)
+    }
     // The runtime keys overrides by input id, variable id or exact title, and
     // titles are matched loosely nowhere: a declaration such as
     // `input.int(14, "  Padded  ")` keeps its spaces, so a title captured from
@@ -424,6 +468,8 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
   try {
     context = await runtime.run(indicator)
   } catch (error) {
+    const translated = translateImportError(error, source)
+    if (translated !== error) throw translated
     // One retry, only for the destructuring limitation described on
     // `repairTupleDestructuring`. A script that ran is never rewritten, so the
     // 140-odd scripts that work today keep running byte-identically.

@@ -261,7 +261,10 @@ describe('scripts that import a library', () => {
     assert.deepEqual(values, [10, 11])
   })
 
-  it('still reports an import it cannot resolve', async () => {
+  it('names the library it cannot resolve instead of how the resolver works', async () => {
+    // The runtime's own wording -- `Import "x/y/1" could not be resolved: the
+    // import resolver returned no source` -- describes our plumbing, not the
+    // author's problem. What is true is that this build does not bundle it.
     await assert.rejects(
       runPineStudy({
         code: '//@version=6\nindicator("z")\nimport Trendoscope/ZigzagLite/4 as zg\nplot(close)',
@@ -269,7 +272,7 @@ describe('scripts that import a library', () => {
         timeframe: '1h',
         interval: '60'
       }),
-      /could not be resolved/
+      /does not bundle the Pine library Trendoscope\/ZigzagLite/
     )
   })
 
@@ -418,6 +421,49 @@ plot(ta.sma(close, len))
     assert.ok(
       Math.abs((lastValue(overridden) - lastValue(plain)) - 89) < 1e-6,
       `expected the trimmed title to apply, got ${lastValue(plain)} -> ${lastValue(overridden)}`
+    )
+  })
+})
+
+describe('a script that imports a library this build does not bundle', () => {
+  // These scripts are why the corpus sweep reported failures that looked like
+  // our bug: the runtime threw from the transpiler before the run, quoting the
+  // resolver's contract. The study still cannot draw, but the message has to say
+  // which library is missing.
+  const BARE_IMPORT = '//@version=6\nindicator("z")\nimport Trendoscope/ZigzagLite/4 as zg\nlen = input.int(5, "Length")\nplot(close)'
+
+  it('still lists the inputs when only the imports are unresolved', async () => {
+    // Transpiling needs each import to parse, not for its functions to exist, so
+    // a stub is enough here. Without that the panel showed nothing at all for a
+    // script whose inputs the author can still usefully edit.
+    const specs = await readPineInputs({ code: BARE_IMPORT })
+    assert.equal(specs.length, 1)
+    assert.equal(specs[0].name, 'Length')
+  })
+
+  it('keeps working for a script whose library IS vendored', async () => {
+    const specs = await readPineInputs({
+      code: '//@version=6\nindicator("v")\nimport TradingView/ta/12 as taLib\nlen = input.int(7, "Length")\nplot(close)'
+    })
+    assert.equal(specs.length, 1)
+    assert.equal(specs[0].name, 'Length')
+    assert.equal(specs[0].type, 'int')
+  })
+
+  it('is reported per study, so the rest of the chart still draws', async () => {
+    // One failure must not take the pane down: the chart resolves each study
+    // independently and reports the ones that could not run.
+    const rows = [{ time: 1700000000000, open: 1, high: 2, low: 1, close: 1.5, volume: 1 }]
+    const out = await runPineStudy({
+      code: '//@version=6\nindicator("ok")\nplot(close)',
+      bars: rows,
+      timeframe: '1h',
+      interval: '60'
+    })
+    assert.equal(out.plots.length, 1)
+    await assert.rejects(
+      runPineStudy({ code: BARE_IMPORT, bars: rows, timeframe: '1h', interval: '60' }),
+      /does not bundle/
     )
   })
 })

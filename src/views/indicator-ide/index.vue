@@ -3100,9 +3100,18 @@ export default {
     selectEditorIndicator (rawId) {
       this.indicatorDropdownVisible = false
       this.selectedIndicatorId = rawId
+      // Choosing what to *edit* is not the same as choosing what to *draw*. This
+      // used to assign `chartVisibleIndicatorIds = [id]`, so clicking a name in
+      // the dropdown discarded the comparison set the user had built -- and,
+      // because the drawn set is what the chart watches, rebuilt and reloaded the
+      // whole chart on every click.
+      //
+      // Picking something to edit still shows it, since that is what an author
+      // expects from picking a script: it joins the drawn set rather than
+      // replacing it.
       const id = Number(rawId)
-      if (!isNaN(id)) {
-        this.chartVisibleIndicatorIds = [id]
+      if (!isNaN(id) && !(this.chartVisibleIndicatorIds || []).some(x => Number(x) === id)) {
+        this.chartVisibleIndicatorIds = [...(this.chartVisibleIndicatorIds || []), id]
       }
       this.onIndicatorChange(rawId)
       this.persistIdeSelectionPreference()

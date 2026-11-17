@@ -329,6 +329,13 @@ export default {
      * and a silent no-op would leave a stale study on screen.
      */
     async updateIndicators () {
+      // The same gate the watcher uses. This method is called from the IDE on
+      // every selection change -- selecting an indicator to edit does not change
+      // what is drawn -- and reconciling unconditionally tore the widget down
+      // and reloaded the series for a click that changed nothing on the chart.
+      const signature = this.indicatorsSignature(this.indicators)
+      if (this.handle && signature === this.lastIndicatorsSignature) return
+      this.lastIndicatorsSignature = signature
       await this.reconcileStudies()
     },
     /**
