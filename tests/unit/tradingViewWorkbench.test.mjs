@@ -13,6 +13,26 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
+
+/**
+ * The source of one component method, from its signature to the next member.
+ *
+ * Slicing between two named members breaks as soon as either one moves into a
+ * different option block, so this walks to the next line that starts a member at
+ * the same indent and stops there.
+ */
+function methodBody (source, signature) {
+  const start = source.indexOf(signature)
+  if (start === -1) return ''
+  const lines = source.slice(start).split('\n')
+  const body = [lines[0]]
+  for (const line of lines.slice(1)) {
+    if (/^ {4}[A-Za-z_$][\w$]*\s*[:(]/.test(line)) break
+    body.push(line)
+  }
+  return body.join('\n')
+}
+
 const read = relativePath => readFileSync(`${frontendRoot}/${relativePath}`, 'utf8')
 
 test('the chart workbench route points at a real page', () => {
@@ -83,7 +103,7 @@ test('the IDE draws every checked indicator in every pane, not just the edited o
   // There is one renderer now, and the checked set is what it draws. A pane is
   // passed in rather than reading the active one, because a second renderer is
   // no longer available to fall back to when the layout is split.
-  const fn = ide.slice(ide.indexOf('tvPaneIndicators (pane)'), ide.indexOf('activeChartPane ()'))
+  const fn = methodBody(ide, 'tvPaneIndicators (pane)')
   assert.match(fn, /chartVisibleIndicatorIds/)
   assert.match(fn, /pane\.visibleIndicatorIds/)
   assert.match(fn, /const studies = \[\]/)
@@ -97,4 +117,29 @@ test('the IDE draws every checked indicator in every pane, not just the edited o
   // Every visible pane mounts the same component.
   assert.match(ide, /:indicators="tvPaneIndicators\(pane\)"/)
   assert.doesNotMatch(ide, /<kline-chart/)
+})
+
+test('no computed property takes an argument', () => {
+  // Vue reads a computed member by calling its getter with no arguments, so a
+  // member declared as `count (pane) { ... }` is stored as the value that call
+  // returns -- undefined -- and the template then throws
+  // `TypeError: count is not a function`. A parameterised member belongs in
+  // `methods`, where the template calls it as written.
+  for (const file of [
+    'src/views/indicator-ide/index.vue',
+    'src/views/tv-workbench/index.vue',
+    'src/components/TradingViewChart/index.vue'
+  ]) {
+    const source = read(file)
+    const lines = source.split('\n')
+    const start = lines.findIndex(line => /^ {2}computed:\s*\{/.test(line))
+    if (start === -1) continue
+    const offenders = []
+    for (let index = start + 1; index < lines.length; index += 1) {
+      if (/^ {2}[A-Za-z_$][\w$]*\s*[:(]/.test(lines[index])) break
+      const member = /^ {4}([A-Za-z_$][\w$]*)\s*\(([^)]+)\)\s*\{/.exec(lines[index])
+      if (member) offenders.push(`${member[1]}(${member[2].trim()}) at line ${index + 1}`)
+    }
+    assert.deepEqual(offenders, [], `${file} has a computed property that takes arguments`)
+  }
 })

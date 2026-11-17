@@ -1549,80 +1549,6 @@ export default {
         { value: 4, label: this.$t('indicatorIde.multiChart.quad') }
       ]
     },
-    /**
-     * The studies the TradingView surface should draw, right now.
-     *
-     * Two things make this different from pointing the chart at a saved row.
-     * The indicator the author is editing comes from the live editor buffer, so
-     * the chart answers "what does this code do" rather than "what did the last
-     * save do". And the other checked indicators come along, because the IDE
-     * already draws several at once on the bundled canvas -- switching renderer
-     * should not quietly drop the comparison you set up.
-     *
-     * An empty buffer contributes nothing rather than falling back to the stored
-     * copy: showing the previous version under new code is worse than showing
-     * no line at all.
-     */
-    /**
-     * How many indicators this pane is drawing.
-     *
-     * The header label used to count a runtime list that only the bundled
-     * canvas kept; the checked set is now the single source of truth.
-     */
-    paneIndicatorCount (pane) {
-      if (!pane) return 0
-      const ids = pane.id === this.activeChartPaneId ? this.chartVisibleIndicatorIds : pane.visibleIndicatorIds
-      return Array.isArray(ids) ? ids.length : 0
-    },
-    tvPaneIndicators (pane) {
-      // Every pane draws itself now, so the checked set is per-pane. The active
-      // pane is the one the editor is bound to, which is why its list is the
-      // live `chartVisibleIndicatorIds` rather than the stored snapshot.
-      const isActive = !pane || pane.id === this.activeChartPaneId
-      const visibleIds = isActive
-        ? (this.chartVisibleIndicatorIds || [])
-        : (pane.visibleIndicatorIds || [])
-      const running = isActive ? this.chartIndicatorRunning !== false : pane.indicatorRunning !== false
-      if (!running) return []
-      const liveCode = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
-      const editingId = Number(this.selectedIndicatorId || 0)
-      const studies = []
-      const seen = new Set()
-
-      for (const rawId of visibleIds) {
-        const id = Number(rawId)
-        if (!id || seen.has(id)) continue
-        seen.add(id)
-        const indicator = this.indicators.find(item => Number(item.id) === id)
-        if (!indicator) continue
-        // The row being edited is previewed from the buffer instead of its
-        // saved code; every other row is previewed from what is stored.
-        const code = id === editingId && String(liveCode || '').trim()
-          ? liveCode
-          : this.getIndicatorExecutableCode(indicator)
-        if (!String(code || '').trim()) continue
-        studies.push({
-          indicatorId: id,
-          originalId: id,
-          name: this.indicatorDisplayName(indicator) || this.extractIndicatorNameFromCode(code),
-          code,
-          params: this.resolveIndicatorRuntimeParams(indicator, code)
-        })
-      }
-
-      // An unsaved script has no row to be checked yet, so the buffer itself is
-      // the only thing there is to draw.
-      if (isActive && !editingId && String(liveCode || '').trim()) {
-        studies.push({
-          indicatorId: 0,
-          originalId: 0,
-          name: this.extractIndicatorNameFromCode(liveCode),
-          code: liveCode,
-          params: {}
-        })
-      }
-      return studies
-    },
     activeChartPane () {
       return (this.chartPanes || []).find(item => item.id === this.activeChartPaneId) || this.chartPanes[0] || null
     },
@@ -1858,6 +1784,80 @@ export default {
     } catch (_) {}
   },
   methods: {
+    /**
+     * How many indicators this pane is drawing.
+     *
+     * The header label used to count a runtime list that only the bundled
+     * canvas kept; the checked set is now the single source of truth.
+     */
+    paneIndicatorCount (pane) {
+      if (!pane) return 0
+      const ids = pane.id === this.activeChartPaneId ? this.chartVisibleIndicatorIds : pane.visibleIndicatorIds
+      return Array.isArray(ids) ? ids.length : 0
+    },
+    /**
+     * The studies the TradingView surface should draw, right now.
+     *
+     * Two things make this different from pointing the chart at a saved row.
+     * The indicator the author is editing comes from the live editor buffer, so
+     * the chart answers "what does this code do" rather than "what did the last
+     * save do". And the other checked indicators come along, because the IDE
+     * already draws several at once on the bundled canvas -- switching renderer
+     * should not quietly drop the comparison you set up.
+     *
+     * An empty buffer contributes nothing rather than falling back to the stored
+     * copy: showing the previous version under new code is worse than showing
+     * no line at all.
+     */
+    tvPaneIndicators (pane) {
+      // Every pane draws itself now, so the checked set is per-pane. The active
+      // pane is the one the editor is bound to, which is why its list is the
+      // live `chartVisibleIndicatorIds` rather than the stored snapshot.
+      const isActive = !pane || pane.id === this.activeChartPaneId
+      const visibleIds = isActive
+        ? (this.chartVisibleIndicatorIds || [])
+        : (pane.visibleIndicatorIds || [])
+      const running = isActive ? this.chartIndicatorRunning !== false : pane.indicatorRunning !== false
+      if (!running) return []
+      const liveCode = this.cmInstance ? this.cmInstance.getValue() : this.currentCode
+      const editingId = Number(this.selectedIndicatorId || 0)
+      const studies = []
+      const seen = new Set()
+
+      for (const rawId of visibleIds) {
+        const id = Number(rawId)
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        const indicator = this.indicators.find(item => Number(item.id) === id)
+        if (!indicator) continue
+        // The row being edited is previewed from the buffer instead of its
+        // saved code; every other row is previewed from what is stored.
+        const code = id === editingId && String(liveCode || '').trim()
+          ? liveCode
+          : this.getIndicatorExecutableCode(indicator)
+        if (!String(code || '').trim()) continue
+        studies.push({
+          indicatorId: id,
+          originalId: id,
+          name: this.indicatorDisplayName(indicator) || this.extractIndicatorNameFromCode(code),
+          code,
+          params: this.resolveIndicatorRuntimeParams(indicator, code)
+        })
+      }
+
+      // An unsaved script has no row to be checked yet, so the buffer itself is
+      // the only thing there is to draw.
+      if (isActive && !editingId && String(liveCode || '').trim()) {
+        studies.push({
+          indicatorId: 0,
+          originalId: 0,
+          name: this.extractIndicatorNameFromCode(liveCode),
+          code: liveCode,
+          params: {}
+        })
+      }
+      return studies
+    },
     chartPaneRefName (paneId) {
       return `klineChartPane_${String(paneId || '').replace(/[^a-zA-Z0-9_-]/g, '_')}`
     },
