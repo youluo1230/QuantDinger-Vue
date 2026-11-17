@@ -88,9 +88,13 @@ export default {
     symbol () {
       // The library has no public "change symbol" call that keeps its own
       // state coherent, so the mounted widget is replaced wholesale.
+      this.barCache.clear()
       this.remount()
     },
     timeframe () {
+      // A different period is a different series; keeping the old bars only
+      // costs memory, since the cache key already keeps them apart.
+      this.barCache.clear()
       this.remount()
     },
     theme () {
