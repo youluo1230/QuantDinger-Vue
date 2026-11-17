@@ -251,11 +251,29 @@ export function barTimeCandidates (ctx) {
  * a different pair produces different numbers, and replaying the wrong array
  * would draw a plausible but false line.
  */
-export function seriesKey ({ indicatorId, market, symbol, timeframe, revision = '' }) {
+export function seriesKey ({ indicatorId, market, symbol, timeframe, revision = '', params = '' }) {
   // `revision` separates an unsaved draft from the saved row behind the same
   // id. Without it the first preview of a draft would be cached under the
   // stored indicator's key and the editor would keep painting stale output.
-  return `${indicatorId}|${market}|${symbol}|${timeframe}|${revision}`
+  // `params` belongs in the key for the same reason `revision` does: changing a
+  // length input produces a different line from the same script, so a cached
+  // plot computed with the old value must not be served for the new one.
+  return `${indicatorId}|${market}|${symbol}|${timeframe}|${revision}|${params}`
+}
+
+/**
+ * A stable fingerprint of the input values a study runs with.
+ *
+ * Sorted by key so two maps with the same entries agree, and prefixed per pair
+ * so values cannot run into each other and make two different settings look
+ * alike.
+ */
+export function paramsFingerprint (params) {
+  if (!params || typeof params !== 'object') return ''
+  return Object.keys(params)
+    .sort()
+    .map(key => `${key}=${String(params[key])}`)
+    .join(',')
 }
 
 /**
@@ -990,7 +1008,8 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
     // bloating the cache map.
     if (!indicatorId && !inlineCode.trim()) return null
     const revision = inlineCode.trim() ? draftRevision(inlineCode) : ''
-    const key = seriesKey({ indicatorId, market, symbol, timeframe, revision })
+    const paramsKey = paramsFingerprint(indicator.params)
+    const key = seriesKey({ indicatorId, market, symbol, timeframe, revision, params: paramsKey })
     let loaded = cache.get(key)
     // Tolerate a bare plot array so a cache seeded elsewhere still works; it
     // simply has no bar times, and every bar would come out as a gap.

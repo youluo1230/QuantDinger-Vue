@@ -173,15 +173,32 @@ test('a re-render with the same studies does not rebuild the chart', () => {
   )
 })
 
-test('the study bar cache survives a rebuild but the resolved plots do not', () => {
-  // Bars are the market's answer, not the study's: rebuilding replaces the
-  // studies, and re-fetching the same candles for a checkbox is the flood.
+test('a rebuild keeps both caches, because both are keyed by what produced them', () => {
+  // Bars are the market's answer and plots are the script's, but neither is
+  // made stale by *drawing a different set* of studies: each entry is keyed by
+  // the series, the script revision, and the input values. Clearing either one
+  // on a rebuild means paying for work that is still valid.
   assert.match(component, /barCache: createStudyBarCache\(\)/)
-  assert.match(component, /this\.seriesCache\.clear\(\)/)
   const reconcile = component.slice(
     component.indexOf('async reconcileStudies ()'),
     component.indexOf('/** The visible time range')
   )
-  assert.match(reconcile, /this\.seriesCache\.clear\(\)/)
+  assert.doesNotMatch(reconcile, /this\.seriesCache\.clear\(\)/)
   assert.doesNotMatch(reconcile, /this\.barCache\.clear\(\)/)
+  // Changing a length input must not serve the plot computed with the old one.
+  assert.match(read('src/charting/indicatorPlots.js'), /params: paramsKey/)
+})
+
+test('a rebuilt chart repaints from memory instead of re-downloading its bars', () => {
+  // Changing the study set tears the widget down and builds it again, which is
+  // unavoidable: the library reads its study registry once at mount. What is not
+  // unavoidable is paying for the same candles twice.
+  assert.match(datafeed, /export function createBarStore/)
+  assert.match(datafeed, /barStore\?\.read\(/)
+  assert.match(datafeed, /barStore\?\.remember\(/)
+  // Coverage is judged per bar, not per request: a rebuilt chart asks for a
+  // slightly different window than the one it was given.
+  assert.match(datafeed, /toleranceMs/)
+  assert.match(host, /barStore/)
+  assert.match(component, /barStore: createBarStore\(\)/)
 })

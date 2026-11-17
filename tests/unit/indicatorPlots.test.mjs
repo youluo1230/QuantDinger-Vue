@@ -327,7 +327,7 @@ describe('seriesKey', () => {
     const other = { ...base, symbol: 'ETH/USDT' }
     assert.notEqual(plots.seriesKey(base), plots.seriesKey(other))
     // Replaying another pair's numbers would draw a plausible, false line.
-    assert.match(plots.seriesKey(base), /^7\|Crypto\|BTC\/USDT\|1H\|$/)
+    assert.match(plots.seriesKey(base), /^7\|Crypto\|BTC\/USDT\|1H\|\|$/)
   })
 
   it('keeps an unsaved draft apart from the saved row behind the same id', () => {
@@ -336,7 +336,7 @@ describe('seriesKey', () => {
     // An editor preview must not be served from the stored indicator's entry,
     // or the first look at a draft shows the previous version's lines.
     assert.notEqual(plots.seriesKey(base), plots.seriesKey(draft))
-    assert.match(plots.seriesKey(draft), /^7\|Crypto\|BTC\/USDT\|1H\|[a-z0-9]+$/)
+    assert.match(plots.seriesKey(draft), /^7\|Crypto\|BTC\/USDT\|1H\|[a-z0-9]+\|$/)
   })
 
   it('gives two different drafts different revisions', () => {
@@ -897,5 +897,35 @@ describe('resolveCustomIndicators', () => {
     })
     assert.equal(calls.length, 0)
     assert.deepEqual(result, { indicators: [], failures: [] })
+  })
+})
+
+describe('seriesKey with input values', () => {
+  it('separates two runs of one script that use different settings', () => {
+    // A cached plot is the output of the script *and* its input values. Serving
+    // the length=20 line after the author typed 50 would look like the input was
+    // ignored, which is a worse bug than recomputing.
+    const base = { indicatorId: 7, market: 'Crypto', symbol: 'BTC/USDT', timeframe: '1H' }
+    const twenty = { ...base, params: plots.paramsFingerprint({ Length: 20 }) }
+    const fifty = { ...base, params: plots.paramsFingerprint({ Length: 50 }) }
+    assert.notEqual(plots.seriesKey(twenty), plots.seriesKey(fifty))
+  })
+
+  it('ignores the order the settings were written in', () => {
+    // The panel builds its map from a form, so key order is whatever the DOM
+    // produced; the same values must not look like a different run.
+    assert.equal(
+      plots.paramsFingerprint({ Length: 20, Source: 'close' }),
+      plots.paramsFingerprint({ Source: 'close', Length: 20 })
+    )
+  })
+
+  it('keeps values from running into each other', () => {
+    // `{a: 'bc'}` and `{ab: 'c'}` concatenate to the same text without a
+    // separator, which would let two different settings share a cache entry.
+    assert.notEqual(
+      plots.paramsFingerprint({ a: 'bc' }),
+      plots.paramsFingerprint({ ab: 'c' })
+    )
   })
 })

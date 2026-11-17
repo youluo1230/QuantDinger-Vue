@@ -7,7 +7,7 @@
 </template>
 
 <script>
-import { mountTradingViewChart } from '@/charting/tradingview'
+import { createBarStore, mountTradingViewChart } from '@/charting/tradingview'
 import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
 
 /**
@@ -69,6 +69,10 @@ export default {
       // Bars, unlike the resolved plots, outlive a study rebuild: the same
       // symbol and timeframe answer every study the user checks and unchecks.
       barCache: createStudyBarCache(),
+      // Market bars for the chart itself, kept across the rebuild that a changed
+      // study set forces: without it the new widget re-downloads the window it
+      // was just showing. See `createBarStore`.
+      barStore: createBarStore(),
       // The last study set this component actually rebuilt for; see the
       // `indicators` watcher for why object identity cannot answer that.
       lastIndicatorsSignature: '',
@@ -173,6 +177,7 @@ export default {
           theme: this.theme,
           locale: this.locale,
           customIndicators: () => this.loadIndicators(),
+          barStore: this.barStore,
           // The quick-trade panel prefills its price from the chart's last
           // trade. The bundled canvas emitted this; without it the panel would
           // keep whatever price it last saw, which is worse than a stale label
@@ -219,10 +224,11 @@ export default {
     async reconcileStudies () {
       if (!this.handle) return
       const viewport = this.captureViewport()
-      this.seriesCache.clear()
-      // `barCache` is deliberately kept: rebuilding replaces the studies, not
-      // the market data they run over, and re-downloading it here is what made
-      // checking a box trigger another full history fetch.
+      // Nothing is cleared here. Every cache entry is keyed by what produced it
+      // -- the script's revision, its parameter values, the series, the venue --
+      // so an entry that is stale cannot be hit, and an entry that is still
+      // valid is exactly what makes this rebuild cheap. Clearing threw that away
+      // and re-ran every script on the chart for a checkbox.
       await this.remount()
       this.restoreViewport(viewport)
     },

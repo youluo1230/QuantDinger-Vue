@@ -183,13 +183,80 @@ function parseTick (tick) {
 }
 
 /**
+ * Bars already fetched for this chart, so a rebuild repaints instead of
+ * re-downloading.
+ *
+ * The library is torn down and built again whenever the study set changes,
+ * because its study registry is read once at mount. That is fine for the
+ * studies -- they are ours -- but it also throws away every bar, and the new
+ * widget immediately asks for the same window it just had. Remembering what was
+ * fetched turns that into a memory read.
+ *
+ * Keyed by timeframe and queried by range rather than by request shape: the
+ * chart asks for a slightly different window after a rebuild (it re-derives
+ * `from` from the viewport), so a cache keyed on the exact request would miss
+ * every time.
+ */
+export function createBarStore ({ limit = 20000 } = {}) {
+  const byTimeframe = new Map()
+  return {
+    remember ({ timeframe, bars }) {
+      if (!timeframe || !Array.isArray(bars) || !bars.length) return
+      const key = String(timeframe)
+      const stored = byTimeframe.get(key) || new Map()
+      for (const bar of bars) {
+        if (bar && Number.isFinite(Number(bar.time))) stored.set(Number(bar.time), bar)
+      }
+      // Trim oldest first: a chart that has scrolled a long way back must not
+      // grow the tab without bound.
+      if (stored.size > limit) {
+        const times = [...stored.keys()].sort((a, b) => a - b)
+        for (const time of times.slice(0, stored.size - limit)) stored.delete(time)
+      }
+      byTimeframe.set(key, stored)
+    },
+    /**
+     * Stored bars inside `[fromMs, toMs]`, oldest first.
+     *
+     * Returns null -- not an empty array -- when the window is only partly
+     * covered: a partial answer would silently truncate the chart, so the caller
+     * falls through to the network instead.
+     */
+    read ({ timeframe, fromMs, toMs, toleranceMs = 0 }) {
+      const stored = byTimeframe.get(String(timeframe))
+      if (!stored || !stored.size) return null
+      const wanted = [...stored.keys()]
+        .filter(time => time >= fromMs && time <= toMs)
+        .sort((a, b) => a - b)
+        .map(time => stored.get(time))
+      if (!wanted.length) return null
+      // The window counts as covered when the store reaches back to within one
+      // bar of its left edge. A chart re-asking for the window it just had lands
+      // a little before its own oldest bar (it derives `from` from the viewport),
+      // and refusing that on a few hundred milliseconds would send every rebuild
+      // to the network -- which is the cost this exists to remove.
+      const oldest = Math.min(...stored.keys())
+      return oldest - toleranceMs <= fromMs ? wanted : null
+    },
+    clear () {
+      byTimeframe.clear()
+    },
+    get size () {
+      let total = 0
+      for (const stored of byTimeframe.values()) total += stored.size
+      return total
+    }
+  }
+}
+
+/**
  * Create a datafeed bound to one chart context.
  *
  * The library instantiates a datafeed per chart and calls these methods in a
  * fixed order, so state that belongs to the chart lives in this closure rather
  * than in module scope where two charts would collide.
  */
-export function createDatafeed ({ market, symbol, exchangeId, marketType, instrumentId, timeframe, onRealtimeBar }) {
+export function createDatafeed ({ market, symbol, exchangeId, marketType, instrumentId, timeframe, onRealtimeBar, barStore = null }) {
   let symbolInfo = buildSymbolInfo({ symbol, market, exchangeId, marketType, instrumentId, timeframe })
   const listeners = new Map()
   let stopped = false
@@ -327,6 +394,25 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
       const requestedStart = Number.isFinite(Number(from)) && Number(from) > 0
         ? Math.min(Math.floor(Number(from)), end - 1)
         : Math.max(0, end - span)
+      // A rebuilt chart asks for the window it was just showing. Answering from
+      // memory keeps that instant instead of re-downloading it; the socket keeps
+      // the newest bar current either way.
+      const stored = barStore?.read({
+        timeframe,
+        fromMs: requestedStart * 1000,
+        toMs: end * 1000,
+        // One bar of slack, because the window a rebuilt chart asks for starts a
+        // little before the oldest bar the previous widget was given.
+        toleranceMs: seconds * 1000
+      })
+      if (stored && stored.length >= Math.min(wanted, 2)) {
+        if (!stopped) {
+          const scale = priceScaleFor(stored)
+          if (scale) symbolInfo = { ...symbolInfo, pricescale: scale }
+          onResult(stored, {})
+        }
+        return
+      }
       try {
         const response = await request({
           url: '/api/market-data/candles',
@@ -343,6 +429,9 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
           .map(parseBar)
           .filter(Boolean)
           .sort((a, b) => a.time - b.time)
+        // A rebuilt chart asks for the same window again. Handing back the bars
+        // it already had keeps the repaint instant; see `createBarStore`.
+        if (bars.length) barStore?.remember({ timeframe, bars })
         if (bars.length) earliestSeenMs = earliestSeenMs == null ? bars[0].time : Math.min(earliestSeenMs, bars[0].time)
         const scale = priceScaleFor(bars)
         if (scale) symbolInfo = { ...symbolInfo, pricescale: scale }

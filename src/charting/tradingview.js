@@ -12,7 +12,9 @@
  * in this process -- see `indicatorPlots.js`.
  */
 
-import { createDatafeed, buildSymbolInfo } from './datafeed'
+import { createBarStore, createDatafeed, buildSymbolInfo } from './datafeed'
+
+export { createBarStore }
 
 const LIBRARY_PATH = '/charting_library/'
 const SCRIPT_ATTR = 'data-tv-library'
@@ -70,7 +72,8 @@ export function buildWidgetOptions ({
   theme = 'dark',
   locale = 'zh',
   customIndicators = [],
-  onRealtimeBar
+  onRealtimeBar,
+  barStore = null
 } = {}) {
   // `customIndicators` may be a ready array or a loader, because the studies
   // depend on bars the widget has not requested yet: loading them up front would
@@ -93,7 +96,8 @@ export function buildWidgetOptions ({
     marketType,
     instrumentId,
     timeframe,
-    onRealtimeBar
+    onRealtimeBar,
+    barStore
   })
   return {
     container,
