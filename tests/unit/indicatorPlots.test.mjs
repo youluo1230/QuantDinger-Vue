@@ -929,6 +929,41 @@ describe('buildCustomIndicator update', () => {
     assert.equal(study.update({ plots: [], candleTimes: [1] }), false)
     assert.equal(study.update({ plots: [{ name: 'a', data: [1] }], candleTimes: [] }), false)
   })
+
+  it('draws a study whose whole output is a table, with no plots at all', () => {
+    // 7 of the stored scripts do this. `resolveCustomIndicators` used to drop
+    // them for having no plots, so the study was never registered.
+    const study = plots.buildCustomIndicator({
+      indicatorId: 4,
+      name: 'table only',
+      series: [],
+      key: 'k',
+      candleTimes: [1700000000000, 1700003600000],
+      tables: [{ position: 'top_right', columns: 1, rows: 1, cells: [{ row: 0, column: 0, text: 'ONLY' }] }]
+    })
+    assert.equal(study.metainfo.plots.length, 0)
+    // Over the price pane: a table with no plot has no pane of its own to get.
+    assert.equal(study.metainfo.overlay, true)
+    assert.equal(study.tables.length, 1)
+  })
+
+  it('moves a study that has drawings even when it has no plots to update', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 4,
+      name: 'label only',
+      series: [],
+      key: 'k',
+      candleTimes: [1700000000000],
+      labels: [{ barIndex: 0, price: 5, text: 'OLD', time: 1700000000000 }]
+    })
+    const liveTime = 1700003600000
+    assert.equal(study.update({
+      plots: [],
+      candleTimes: [1700000000000, liveTime],
+      labels: [{ barIndex: 1, price: 6, text: 'NEW', time: liveTime }]
+    }), true)
+    assert.equal(study.labels[0].text, 'NEW')
+  })
 })
 
 describe('resolveCustomIndicators', () => {

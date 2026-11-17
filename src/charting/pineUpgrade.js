@@ -561,3 +561,79 @@ function parensClosed (text) {
 }
 
 export default upgradeLegacyPine
+
+/**
+ * Drawings whose `delete()` has to survive an empty slot.
+ *
+ * Pine lets a script keep drawings in an array and trim it:
+ * `arr.shift().delete()`. PineTS stores `line(na)`/`label(na)` in the array as
+ * `null`, so the chained call dereferences null and throws. Real Pine treats
+ * `na_line.delete()` as a no-op, so the chained form is rewritten to the static
+ * one, which the runtime already handles for a null receiver and for a drawing
+ * of a different type.
+ */
+const DRAWING_TYPES = ['line', 'label', 'box', 'linefill', 'polyline', 'table']
+
+/** The static form each drawing type deletes through. */
+const DRAWING_DELETE = {
+  line: 'line.delete',
+  label: 'label.delete',
+  box: 'box.delete',
+  linefill: 'linefill.delete',
+  polyline: 'line.delete',
+  table: 'table.delete'
+}
+
+/**
+ * Rewrite `<expr>.delete()` to a static delete that tolerates a null receiver.
+ *
+ * Only the drawing types above are rewritten, and only when the receiver is a
+ * single expression: `stmt.shift().delete()` becomes
+ * `line.delete(stmt.shift())`. Anything else -- a call on a number, on a table
+ * built by `table.new` -- is left exactly as the author wrote it. The type is
+ * read off the receiver's name where it can be (`c9_pLbl` is a `label`), and
+ * `line.delete` is used when it cannot be, because it is the one form the
+ * runtime accepts for every drawing type.
+ */
+export function repairDrawingDelete (source) {
+  const text = String(source || '')
+  if (!text.trim()) return { code: text, repaired: false }
+  const ranges = maskedRanges(text)
+  // Receiver declared types, so `c9_uG.shift().delete()` can pick `line.delete`
+  // over the generic form. Reviews of the corpus show the names carry a prefix
+  // rather than a type, so this is a best-effort map and the fallback is safe.
+  const declared = new Map()
+  const typeRe = new RegExp(`(?:^|[\\s,])(${DRAWING_TYPES.join('|')})\\s*\\[\\s*\\]\\s+([A-Za-z_]\\w*)`, 'g')
+  for (const match of text.matchAll(typeRe)) declared.set(match[2], match[1])
+  for (const match of text.matchAll(new RegExp(`\\b(${DRAWING_TYPES.join('|')})\\s+([A-Za-z_]\\w*)\\s*=`, 'g'))) {
+    if (!declared.has(match[2])) declared.set(match[2], match[1])
+  }
+  const edits = []
+  // `EXPR.delete()` where EXPR is a run of identifier/member/paren/index/call
+  // characters: enough for `x`, `a.get(0)`, `arr.shift()`, `obj.field`.
+  for (const match of text.matchAll(/([A-Za-z_][\w.]*(?:\([^()]*\))?(?:\[[^\]]*\])?)\.delete\(\s*\)/g)) {
+    const at = match.index
+    if (inRanges(ranges, at)) continue
+    // Skip the static form's own receiver: `line.delete` has no parentheses
+    // before the dot, so its own match starts at the call's `(...)`. The look
+    // below is enough -- a rewritten call never re-matches.
+    const receiver = match[1]
+    const root = (/([A-Za-z_]\w*)/.exec(receiver) || [])[1] || ''
+    // A drawing built inline names its own type (`label.new(...).delete()`);
+    // otherwise the type comes from the receiver's declaration. Falls back to
+    // `line.delete`, which the runtime accepts for every drawing type.
+    const inline = DRAWING_TYPES.includes(root) ? root : ''
+    const kind = inline || declared.get(root)
+    const method = DRAWING_DELETE[kind] || 'line.delete'
+    edits.push({ from: at, to: at + match[0].length, text: `${method}(${receiver})` })
+  }
+  if (!edits.length) return { code: text, repaired: false }
+  let out = text
+  let changed = false
+  for (const edit of edits.sort((a, b) => b.from - a.from)) {
+    if (out.slice(edit.from, edit.to) === edit.text) continue
+    out = out.slice(0, edit.from) + edit.text + out.slice(edit.to)
+    changed = true
+  }
+  return { code: out, repaired: changed }
+}

@@ -625,8 +625,33 @@ export async function loadSeries ({
     signals: Array.isArray(result.signals) ? result.signals : [],
     // Already in milliseconds: `toPineBar` normalised them on the way in, so
     // there is no second conversion to get wrong.
-    candleTimes: result.candleTimes
+    candleTimes: result.candleTimes,
+    // Labels are pinned to a bar index; the chart draws at a time. Resolving
+    // that here is what lets a caller hand a drawing straight to the library
+    // without knowing how the runtime numbered its bars.
+    labels: anchorLabels(result.labels, result.candleTimes),
+    tables: Array.isArray(result.tables) ? result.tables : []
   }
+}
+
+/**
+ * Turn the runtime's bar indices into the times the chart draws at.
+ *
+ * A label whose bar is not in the series is dropped rather than pinned to the
+ * wrong candle: the runtime numbers its bars from the series it was given, so a
+ * missing index means the drawing belongs to a bar this study cannot address,
+ * and drawing it elsewhere would be a lie about where it happened.
+ */
+function anchorLabels (labels, candleTimes) {
+  if (!Array.isArray(labels) || !labels.length) return []
+  const times = Array.isArray(candleTimes) ? candleTimes : []
+  const out = []
+  for (const label of labels) {
+    const time = times[Number(label.barIndex)]
+    if (!Number.isFinite(time)) continue
+    out.push({ ...label, time })
+  }
+  return out
 }
 
 /**
@@ -837,10 +862,12 @@ function colourChannel (plot) {
  * outside it (older than the request, or newer than its last candle) genuinely
  * have no output, and carrying a neighbour's value forward would invent data.
  */
-export function buildCustomIndicator ({ indicatorId, name, series, key, candleTimes }) {
+export function buildCustomIndicator ({ indicatorId, name, series, key, candleTimes, labels = [], tables = [] }) {
   const label = String(name || `Indicator ${indicatorId}`)
   const primary = series.find(plot => plot.overlay) || series[0]
-  const overlaysPrice = Boolean(primary && primary.overlay !== false)
+  // A script that draws annotations has something to show even when every one
+  // of its plots sits in the data window or none exist at all.
+  const overlaysPrice = Boolean(primary && primary.overlay !== false) || (!primary && (labels.length > 0 || tables.length > 0))
   const layout = buildPlotLayout(series)
 
   const metainfo = {
@@ -918,6 +945,11 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     constructor: Study,
     series,
     barIndex,
+    // Drawings the series cannot carry. A label is pinned to a time and a
+    // price; a table is placed at a corner of the pane. Neither is a plot, so
+    // a study's plot table cannot express them, and the caller draws them.
+    labels: Array.isArray(labels) ? labels : [],
+    tables: Array.isArray(tables) ? tables : [],
     // What the caller turns into the next lookup on a live bar, so it does not
     // have to reach back into the cache for it.
     candleTimes: Array.isArray(candleTimes) ? candleTimes : [],
@@ -933,16 +965,24 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
      * metainfo above is frozen at construction and addresses plots by id. A
      * live update only ever appends bars, so the ids do not move.
      */
-    update ({ plots, candleTimes } = {}) {
-      if (!Array.isArray(plots) || !plots.length) return false
+    update ({ plots, candleTimes, labels: nextLabels, tables: nextTables } = {}) {
+      // A script that draws nothing but annotations has an empty plot list on
+      // every bar, so a live tick still has to be accepted to move them.
+      const hasPlots = Array.isArray(plots) && plots.length
+      const hasDrawings = (Array.isArray(nextLabels) && nextLabels.length) || (Array.isArray(nextTables) && nextTables.length)
+      if (!hasPlots && !hasDrawings) return false
       if (!Array.isArray(candleTimes) || !candleTimes.length) return false
       // Same script, one more bar: the layout is rebuilt so the lookup indexes
       // the longer value arrays. `metainfo` deliberately stays as it was -- the
       // plot ids it advertises do not move when a bar is appended.
-      const next = buildPlotLayout(normalizePlots(plots))
-      state.plotSpecs = next.specs
-      state.plotCount = next.plots.length
+      if (hasPlots) {
+        const next = buildPlotLayout(normalizePlots(plots))
+        state.plotSpecs = next.specs
+        state.plotCount = next.plots.length
+      }
       Object.assign(lookup, buildLookup(candleTimes))
+      if (Array.isArray(nextLabels)) this.labels = nextLabels
+      if (Array.isArray(nextTables)) this.tables = nextTables
       return true
     }
   }
@@ -1265,13 +1305,20 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
       cache.set(key, loaded)
     }
     const series = loaded?.plots
-    if (!series || !series.length) return null
+    // A script whose only output is a table or a label has no plots at all, and
+    // dropping it here is what made 7 of the corpus draw an empty study. It is
+    // kept when it has drawings to hand to the chart instead.
+    const labels = Array.isArray(loaded?.labels) ? loaded.labels : []
+    const tables = Array.isArray(loaded?.tables) ? loaded.tables : []
+    if ((!series || !series.length) && !labels.length && !tables.length) return null
     return {
       study: buildCustomIndicator({
         indicatorId,
         name: indicator.name || indicator.display_name || indicator.title,
-        series,
+        series: series || [],
         candleTimes: loaded?.candleTimes,
+        labels,
+        tables,
         key
       })
     }

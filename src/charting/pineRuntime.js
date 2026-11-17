@@ -17,7 +17,7 @@
  */
 
 import { importPaths, missingLibraries, pineImportResolver } from './pineLibraries.js'
-import { repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
+import { repairDrawingDelete, repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
 
 /** Bars per study computation. Beyond this the cost stops being imperceptible. */
 export const DEFAULT_STUDY_BARS = 1500
@@ -36,6 +36,15 @@ const IMPORT_RE = /^[ \t]*import[ \t]+[A-Za-z_]/m
  * internal one and its name is minified.
  */
 const DYNAMIC_ACCESS_RE = /dynamic computed member access/
+
+/**
+ * The runtime dereferencing a drawing a Pine array handed back as null.
+ *
+ * A script that trims a drawing array with `arr.shift().delete()` hits this:
+ * PineTS stores `line(na)` as null, and real Pine treats `na_line.delete()` as
+ * a no-op. Matched on text for the same reason as the pattern above.
+ */
+const NULL_DELETE_RE = /reading 'delete'/
 
 /**
  * A bar time in milliseconds, or null when the value is not a plausible time.
@@ -196,6 +205,111 @@ export function plotsFromPine (plots) {
  * these scripts do it 161 times.
  */
 const OFF_PANE_DISPLAY = new Set(['none', 'data_window', 'status_line'])
+
+/**
+ * The runtime's drawing collections, found without depending on where it keeps
+ * them.
+ *
+ * PineTS hands its `label.*`/`table.*` helpers back as an object keyed by index
+ * (`_drawingHelpers[0]._labels`, `[5]._tables`, ...). Index order is an
+ * implementation detail, so lookup goes through the object's own keys and takes
+ * the first array of the expected name. A runtime upgrade that renumbers them
+ * then changes nothing here.
+ */
+function drawingCollection (context, name) {
+  const helpers = context && context._drawingHelpers
+  if (!helpers || typeof helpers !== 'object') return []
+  const key = Object.keys(helpers).find(k => Array.isArray(helpers[k] && helpers[k][name]) && helpers[k][name].length)
+  if (!key) return []
+  return helpers[key][name].filter(item => item && typeof item === 'object' && item._deleted !== true)
+}
+
+/**
+ * Text a script drew at a price on a bar, as `label.new` left it.
+ *
+ * These are real chart drawings, not plot series, and dropping them made a
+ * script whose whole output is annotations draw an empty study. The runtime has
+ * already resolved `x` to a bar index and `y` to a price, so no coordinate
+ * translation happens here; the caller turns `x` into a time using the same
+ * candle list it built the study from.
+ *
+ * `style_none` means "invisible label, tooltip only" in Pine, so it is kept --
+ * a hover target is still output -- but flagged so a renderer can choose to
+ * skip the box.
+ */
+export function labelsFromPine (context) {
+  const out = []
+  for (const label of drawingCollection(context, '_labels')) {
+    const text = String(label.text ?? '')
+    // A label with nothing to say and nothing to show on hover draws nothing.
+    if (!text && !String(label.tooltip || '')) continue
+    const x = Number(label.x)
+    const y = Number(label.y)
+    if (!Number.isFinite(x)) continue
+    out.push({
+      barIndex: x,
+      // `yloc=pr` is an absolute price; any other location is relative to the
+      // bar, and in that case the price the runtime stored is still the one the
+      // label is pinned to, so it is passed through unchanged.
+      price: Number.isFinite(y) ? y : null,
+      text,
+      tooltip: String(label.tooltip || ''),
+      color: String(label.color || ''),
+      textColor: String(label.textcolor || ''),
+      style: String(label.style || ''),
+      size: String(label.size || ''),
+      // `style_none` hides the box. Kept in the list because the tooltip is the
+      // only thing such a label draws, and that is deliberate in Pine.
+      boxed: String(label.style || '') !== 'style_none'
+    })
+  }
+  return out
+}
+
+/**
+ * A script's `table.*` output, as the cells it filled.
+ *
+ * 77 of the corpus draw at least one table and several draw nothing else. The
+ * runtime hands back a sparse cell grid; empty cells are dropped so the caller
+ * receives the cells that carry text rather than a rectangle of nulls, and a
+ * table with no text anywhere is not output at all.
+ */
+export function tablesFromPine (context) {
+  const out = []
+  for (const table of drawingCollection(context, '_tables')) {
+    const cells = []
+    const grid = Array.isArray(table.cells) ? table.cells : []
+    for (let row = 0; row < grid.length; row += 1) {
+      const line = Array.isArray(grid[row]) ? grid[row] : []
+      for (let column = 0; column < line.length; column += 1) {
+        const cell = line[column]
+        if (!cell || typeof cell !== 'object') continue
+        const text = String(cell.text ?? '')
+        if (!text) continue
+        cells.push({
+          row,
+          column,
+          text,
+          textColor: String(cell.text_color || ''),
+          backgroundColor: String(cell.bgcolor || ''),
+          textSize: String(cell.text_size || ''),
+          tooltip: String(cell.tooltip || '')
+        })
+      }
+    }
+    if (!cells.length) continue
+    out.push({
+      position: String(table.position || 'top_right'),
+      columns: Number(table.columns) || 0,
+      rows: Number(table.rows) || 0,
+      backgroundColor: String(table.bgcolor || ''),
+      borderColor: String(table.border_color || ''),
+      frameColor: String(table.frame_color || ''),
+      cells
+    })
+  }
+  return out
+}
 
 function isHiddenFromChart (options) {
   const display = options && typeof options === 'object' ? options.display : ''
@@ -497,11 +611,19 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
   } catch (error) {
     const translated = translateImportError(error, source)
     if (translated !== error) throw translated
-    // One retry, only for the destructuring limitation described on
-    // `repairTupleDestructuring`. A script that ran is never rewritten, so the
-    // 140-odd scripts that work today keep running byte-identically.
-    if (!DYNAMIC_ACCESS_RE.test(String(error && error.message || error))) throw error
-    const repaired = repairTupleDestructuring(source)
+    // Two limitations get one retry each, and only the one that raised: a
+    // script that ran is never rewritten, so the 140-odd scripts that work
+    // today keep running byte-identically. `repair` returns the same text when
+    // it has nothing to do, and that is what re-raises the original error.
+    const message = String(error && error.message || error)
+    let repaired = { code: source, repaired: false }
+    if (DYNAMIC_ACCESS_RE.test(message)) {
+      repaired = repairTupleDestructuring(source)
+      repairedFor = 'tuple-destructuring'
+    } else if (NULL_DELETE_RE.test(message)) {
+      repaired = repairDrawingDelete(source)
+      repairedFor = 'drawing-delete'
+    }
     if (!repaired.repaired) throw error
     const retry = new Indicator(repaired.code)
     if (overrides) {
@@ -521,7 +643,6 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
       retryRuntime.setImportResolver(pineImportResolver({ allowMissing: true, source: repaired.code }))
     }
     context = await retryRuntime.run(retry)
-    repairedFor = 'tuple-destructuring'
   }
   return {
     plots: plotsFromPine(context?.plots),
@@ -529,6 +650,12 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
     // the chart study has never drawn them.
     signals: [],
     candleTimes: rows.map(row => row.time),
+    // Labels and tables are not plots and used to be thrown away, which left 7
+    // corpus scripts drawing a valid study with nothing on it: their entire
+    // output was `table.cell` / `label.new`. They are real drawings with
+    // coordinates and colours, so they are handed to the caller that way.
+    labels: labelsFromPine(context),
+    tables: tablesFromPine(context),
     // Reported so the UI can say "read as v4" instead of silently showing a
     // different line than the one the source spells.
     upgrade: upgraded ? { from, notes } : null,

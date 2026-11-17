@@ -21,9 +21,11 @@ import assert from 'node:assert/strict'
 import {
   MAX_STUDY_BARS,
   DEFAULT_STUDY_BARS,
+  labelsFromPine,
   plotsFromPine,
   readPineInputs,
   runPineStudy,
+  tablesFromPine,
   toBarTimeMs,
   toInputSpecs,
   toPineBar
@@ -497,5 +499,117 @@ describe('a script that imports a library this build does not bundle', () => {
     // A script that calls a stub function still draws.
     const stubbed = await runPineStudy({ code: BARE_IMPORT, bars: rows, timeframe: '1h', interval: '60' })
     assert.equal(stubbed.plots.length, 1)
+  })
+})
+
+describe('the drawings a script makes instead of plotting', () => {
+  // 60 of the stored scripts draw labels and 77 draw tables; 7 draw nothing
+  // else at all. Reading them out of the runtime is what stops those studies
+  // from being registered and then drawing a blank pane.
+  it('reads a label as the time, price and text it draws', () => {
+    const context = {
+      _drawingHelpers: {
+        0: {
+          _labels: [
+            { x: 7, y: 101.5, text: 'BUY', tooltip: '', color: '#00FF00', textcolor: '#FFFFFF', style: 'style_label_up', size: 'small', _deleted: false }
+          ]
+        }
+      }
+    }
+    assert.deepEqual(labelsFromPine(context), [
+      { barIndex: 7, price: 101.5, text: 'BUY', tooltip: '', color: '#00FF00', textColor: '#FFFFFF', style: 'style_label_up', size: 'small', boxed: true }
+    ])
+  })
+
+  it('finds the collections without trusting what index they sit at', () => {
+    // The runtime's index numbering is an implementation detail; a version that
+    // renumbers it must not silently empty every label on the chart.
+    const context = { _drawingHelpers: { 9: { _labels: [{ x: 1, y: 2, text: 'hi' }] } } }
+    assert.equal(labelsFromPine(context).length, 1)
+  })
+
+  it('drops a deleted label and one with nothing to draw', () => {
+    const context = {
+      _drawingHelpers: {
+        0: {
+          _labels: [
+            { x: 1, y: 2, text: 'gone', _deleted: true },
+            { x: 3, y: 4, text: '', tooltip: '' }
+          ]
+        }
+      }
+    }
+    assert.deepEqual(labelsFromPine(context), [])
+  })
+
+  it('keeps a tooltip-only label but marks it as unboxed', () => {
+    const context = { _drawingHelpers: { 0: { _labels: [{ x: 2, y: 3, text: '', tooltip: 'detail', style: 'style_none' }] } } }
+    const [label] = labelsFromPine(context)
+    assert.equal(label.tooltip, 'detail')
+    assert.equal(label.boxed, false)
+  })
+
+  it('reads a table as positioned cells, skipping the holes in the grid', () => {
+    const context = {
+      _drawingHelpers: {
+        5: {
+          _tables: [{
+            position: 'bottom_left',
+            columns: 2,
+            rows: 2,
+            bgcolor: '#101010',
+            border_color: '#404040',
+            frame_color: '',
+            _deleted: false,
+            cells: [
+              [{ text: 'A', text_color: '#FFF', bgcolor: '#F00', text_size: 'small', tooltip: '' }, null],
+              [null, { text: 'D', text_color: '#000', bgcolor: '', text_size: 'normal', tooltip: 'hover' }]
+            ]
+          }]
+        }
+      }
+    }
+    const [table] = tablesFromPine(context)
+    assert.equal(table.position, 'bottom_left')
+    assert.equal(table.backgroundColor, '#101010')
+    assert.deepEqual(table.cells.map(cell => [cell.row, cell.column, cell.text]), [[0, 0, 'A'], [1, 1, 'D']])
+    assert.equal(table.cells[1].tooltip, 'hover')
+  })
+
+  it('has no table to draw when every cell is empty', () => {
+    const context = { _drawingHelpers: { 5: { _tables: [{ position: 'top_right', cells: [[null, { text: '' }]] }] } } }
+    assert.deepEqual(tablesFromPine(context), [])
+  })
+
+  it('has no drawings to read when the context carries none', () => {
+    assert.deepEqual(labelsFromPine(undefined), [])
+    assert.deepEqual(tablesFromPine({}), [])
+    assert.deepEqual(tablesFromPine({ _drawingHelpers: {} }), [])
+  })
+
+  it('draws a table-only script, which has no plots at all', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      openTime: 1700000000000 + index * 3600000,
+      closeTime: 1700000000000 + (index + 1) * 3600000,
+      open: 100 + index, high: 101 + index, low: 99 + index, close: 100.5 + index, volume: 10
+    }))
+    const out = await runPineStudy({
+      code: [
+        '//@version=6',
+        'indicator("table only")',
+        'var table t = table.new(position.top_right, 1, 1)',
+        'if barstate.islast',
+        '    table.cell(t, 0, 0, "ONLY OUTPUT")',
+        '    label.new(bar_index, high, "and a label")'
+      ].join('\n'),
+      bars: rows,
+      timeframe: '1h',
+      interval: '60'
+    })
+    assert.equal(out.plots.length, 0)
+    assert.equal(out.tables.length, 1)
+    assert.equal(out.tables[0].cells[0].text, 'ONLY OUTPUT')
+    assert.equal(out.labels.length, 1)
+    assert.equal(out.labels[0].text, 'and a label')
   })
 })

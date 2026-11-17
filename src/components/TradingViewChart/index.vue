@@ -2,6 +2,26 @@
   <div class="tv-chart" :class="`tv-chart--${theme}`">
     <div ref="chartHost" class="tv-chart__host" :class="{ 'tv-chart__host--active': hostSlot === 0 }" />
     <div ref="chartHostSpare" class="tv-chart__host" :class="{ 'tv-chart__host--active': hostSlot === 1 }" />
+    <div class="tv-chart__tables" aria-hidden="true">
+      <table
+        v-for="(table, tableIndex) in indicatorTables"
+        :key="tableIndex"
+        class="tv-chart__table"
+        :class="`tv-chart__table--${table.position.replace(/_/g, '-')}`"
+        :style="tableStyle(table)"
+      >
+        <tbody>
+          <tr v-for="row in tableRows(table)" :key="row.index">
+            <td
+              v-for="cell in row.cells"
+              :key="cell.column"
+              :style="cellStyle(cell)"
+              :title="cell.tooltip || null"
+            >{{ cell.text }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <div v-if="error" class="tv-chart__error">{{ error }}</div>
     <div v-else-if="indicatorError" class="tv-chart__warning">{{ indicatorError }}</div>
   </div>
@@ -38,6 +58,36 @@ import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from 
  * instead of being dropped.
  */
 const LIVE_RESOLVE_MS = 250
+
+/** Pine's label sizes, as the library's text tool measures them. */
+const LABEL_FONT_SIZE = { tiny: 9, small: 11, normal: 14, large: 18, huge: 24 }
+
+/**
+ * A Pine label as the library's text-drawing overrides.
+ *
+ * The library draws the text in `color` and fills the box with it when
+ * `fillBackground` is set, which is the opposite of Pine -- there `color` is the
+ * box and `textcolor` is the writing. So the two are swapped rather than passed
+ * through, and a label the script left with no explicit colour keeps the
+ * library's defaults instead of being painted black.
+ */
+function labelOverrides (label) {
+  const overrides = {
+    'linetooltext.fontsize': LABEL_FONT_SIZE[String(label.size || '').toLowerCase()] || LABEL_FONT_SIZE.normal,
+    'linetooltext.wordWrap': true,
+    'linetooltext.wordWrapWidth': 240,
+    'linetooltext.fixedSize': false
+  }
+  if (label.textColor) overrides['linetooltext.color'] = label.textColor
+  if (label.color) {
+    overrides['linetooltext.fillBackground'] = true
+    overrides['linetooltext.backgroundColor'] = label.color
+    // Pine's box is opaque; without this the library paints it at 70% and a
+    // dark label over a candle becomes unreadable.
+    overrides['linetooltext.backgroundTransparency'] = 10
+  }
+  return overrides
+}
 
 function codeFingerprint (code) {
   const text = String(code || '')
@@ -98,6 +148,12 @@ export default {
       // What the library created, in creation order, so a live bar can update
       // those studies in place instead of rebuilding the widget.
       liveStudies: [],
+      // Labels this component drew on the chart, kept so a redraw can remove the
+      // previous set instead of stacking a second copy on top of it.
+      drawnLabels: [],
+      // Tables a study filled. The library's drawing API has no table primitive,
+      // so they are rendered as positioned DOM over the chart.
+      indicatorTables: [],
       // The most recent socket bar, waiting for the next resolve slot.
       liveBar: null,
       liveResolveTimer: null,
@@ -359,6 +415,106 @@ export default {
         }
       }
       this.liveStudies = created
+      this.drawStudyDrawings(created)
+    },
+    /**
+     * Draw what the study's plot table cannot carry.
+     *
+     * A `label.new` is a point with a price and a bar time, which the library's
+     * shape API takes directly. A `table.*` has no drawing primitive at all, so
+     * its cells are rendered as positioned DOM over the pane.
+     */
+    drawStudyDrawings (studies) {
+      this.clearStudyDrawings()
+      const list = Array.isArray(studies) ? studies : []
+      const tables = []
+      for (const study of list) {
+        if (Array.isArray(study.tables) && study.tables.length) {
+          tables.push(...study.tables.map(table => ({ ...table, studyName: study.name })))
+        }
+      }
+      this.indicatorTables = tables
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.createShape !== 'function') return
+      const pending = []
+      for (const study of list) {
+        for (const label of Array.isArray(study.labels) ? study.labels : []) {
+          // `style_none` draws no box in Pine -- only the hover text -- and the
+          // library's text tool always draws something, so those are skipped
+          // rather than drawn as an empty label.
+          if (!label.boxed) continue
+          if (!Number.isFinite(label.time)) continue
+          const point = Number.isFinite(label.price)
+            ? { time: Math.floor(label.time / 1000), price: label.price }
+            : { time: Math.floor(label.time / 1000) }
+          pending.push(
+            chart.createShape(point, {
+              shape: 'text',
+              lock: true,
+              // The label belongs to the study, not to the user's annotations:
+              // it must not be selectable, saved, or on the undo stack.
+              disableSelection: true,
+              disableSave: true,
+              disableUndo: true,
+              showInObjectsTree: false,
+              text: label.text,
+              overrides: labelOverrides(label)
+            }).catch(() => null)
+          )
+        }
+      }
+      // Kept for the next redraw to remove; a shape the library refused is not
+      // tracked, so a failure cannot leave the removal list holding a dead id.
+      Promise.all(pending).then(ids => {
+        this.drawnLabels = ids.filter(id => id !== null)
+      }).catch(() => {})
+    },
+    clearStudyDrawings () {
+      const chart = this.handle?.widget?.activeChart?.()
+      const ids = this.drawnLabels
+      this.drawnLabels = []
+      this.indicatorTables = []
+      if (!chart || typeof chart.removeEntity !== 'function') return
+      for (const id of ids) {
+        try {
+          chart.removeEntity(id)
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('removeEntity failed', err)
+          }
+        }
+      }
+    },
+    /** Position and colours for one Pine table, as the DOM overlay needs them. */
+    tableStyle (table) {
+      const style = { borderColor: table.borderColor || 'transparent' }
+      if (table.backgroundColor) style.backgroundColor = table.backgroundColor
+      return style
+    },
+    /**
+     * One table's cells grouped by row.
+     *
+     * The runtime hands back a flat, sparse list; rendering needs rows, and the
+     * gaps have to stay gaps -- a missing cell is a hole in the layout, not a
+     * cell that should slide left.
+     */
+    tableRows (table) {
+      const byRow = new Map()
+      for (const cell of Array.isArray(table.cells) ? table.cells : []) {
+        if (!byRow.has(cell.row)) byRow.set(cell.row, [])
+        byRow.get(cell.row).push(cell)
+      }
+      return [...byRow.keys()].sort((a, b) => a - b).map(index => ({
+        index,
+        cells: byRow.get(index).sort((a, b) => a.column - b.column)
+      }))
+    },
+    cellStyle (cell) {
+      const style = {}
+      if (cell.textColor) style.color = cell.textColor
+      if (cell.backgroundColor) style.backgroundColor = cell.backgroundColor
+      if (cell.textSize) style.fontSize = `${LABEL_FONT_SIZE[cell.textSize] || LABEL_FONT_SIZE.normal}px`
+      return style
     },
     reportFailures (failures) {
       const list = Array.isArray(failures) ? failures : []
@@ -467,9 +623,17 @@ export default {
         // resolve would otherwise shift every later study onto the previous
         // study's instance. A study with no match simply keeps its old output.
         const byKey = new Map(this.liveStudies.map(study => [study.key, study]))
+        let drawingsMoved = false
         for (const next of indicators) {
-          byKey.get(next.key)?.update?.({ plots: next.series, candleTimes: next.candleTimes })
+          const target = byKey.get(next.key)
+          if (!target) continue
+          const moved = target.update?.({ plots: next.series, candleTimes: next.candleTimes, labels: next.labels, tables: next.tables })
+          if (moved && ((next.labels || []).length || (next.tables || []).length)) drawingsMoved = true
         }
+        // Labels and tables sit at bar positions, so a new bar moves them. Only
+        // redrawn when a study actually carried some: removing and recreating
+        // shapes on every tick would make them flicker for no reason.
+        if (drawingsMoved) this.drawStudyDrawings(this.liveStudies)
         this.handle?.widget?.activeChart?.()?.refreshMarks?.()
       } catch (err) {
         if (process.env.NODE_ENV !== 'production') {
@@ -566,6 +730,10 @@ export default {
     teardown () {
       if (!this.handle) return
       this.positionLines = []
+      // Tables are DOM, labels are chart shapes; both belong to the widget that
+      // is about to go.
+      this.indicatorTables = []
+      this.drawnLabels = []
       try {
         this.handle.destroy()
       } finally {
@@ -649,6 +817,44 @@ export default {
       visibility: visible;
       pointer-events: auto;
     }
+  }
+
+  // Pine tables, as the DOM the library has no primitive for. Positioned in the
+  // pane corners the script names, above the chart but taking no clicks.
+  &__tables {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  &__table {
+    position: absolute;
+    margin: 0;
+    font-family: 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+    font-size: 12px;
+    line-height: 1.3;
+    border-collapse: collapse;
+    border: 1px solid transparent;
+    pointer-events: auto;
+
+    td {
+      padding: 2px 5px;
+      white-space: nowrap;
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    &--top-right { top: 8px; right: 64px; }
+    &--top-left { top: 8px; left: 8px; }
+    &--top-center { top: 8px; left: 50%; transform: translateX(-50%); }
+    &--middle-center { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+    &--middle-left { top: 50%; left: 8px; transform: translateY(-50%); }
+    &--bottom-right { bottom: 28px; right: 64px; }
+    &--bottom-left { bottom: 28px; left: 8px; }
+    // The 28px clears the library's own bottom-right legend, which a table
+    // would otherwise sit on top of.
+    &--bottom-center { bottom: 28px; left: 50%; transform: translateX(-50%); }
   }
 
   &__warning {

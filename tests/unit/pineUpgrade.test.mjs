@@ -25,6 +25,7 @@ import {
   legacyInputCalls,
   needsUpgrade,
   pineVersionOf,
+  repairDrawingDelete,
   repairTupleDestructuring,
   upgradeLegacyPine
 } from '../../src/charting/pineUpgrade.js'
@@ -206,5 +207,40 @@ plot(a)
     const { code } = repairTupleDestructuring(two)
     assert.match(code, /\[__qd_t0_0, __qd_t0_1\] = f\(\)/)
     assert.match(code, /\[__qd_t1_0, __qd_t1_1\] = g\(\)/)
+  })
+})
+
+describe('repairDrawingDelete', () => {
+  // Pine lets a script trim a drawing array with `arr.shift().delete()`. PineTS
+  // stores `line(na)` in the array as null, so the chained call dereferences
+  // null and throws; real Pine treats it as a no-op. Id 154 of the stored
+  // scripts does exactly this and failed to run at 1500 bars because of it.
+  it('rewrites a chained delete into the static form the runtime accepts', () => {
+    const source = '//@version=6\nindicator("t")\nvar line[] a = array.new<line>()\na.shift().delete()'
+    const { code, repaired } = repairDrawingDelete(source)
+    assert.equal(repaired, true)
+    assert.match(code, /line\.delete\(a\.shift\(\)\)/)
+  })
+
+  it('picks the static form for the type the receiver was declared as', () => {
+    const source = '//@version=6\nindicator("t")\nvar label[] lbs = array.new<label>()\nlbs.shift().delete()'
+    assert.match(repairDrawingDelete(source).code, /label\.delete\(lbs\.shift\(\)\)/)
+  })
+
+  it('reads the type off a drawing built inline', () => {
+    const source = '//@version=6\nindicator("t")\nlabel.new(1, 2, "x").delete()'
+    assert.match(repairDrawingDelete(source).code, /label\.delete\(label\.new\(1, 2, "x"\)\)/)
+  })
+
+  it('leaves a call that is already static alone', () => {
+    const source = '//@version=6\nindicator("t")\nline.delete(x)'
+    const { code, repaired } = repairDrawingDelete(source)
+    assert.equal(repaired, false)
+    assert.equal(code, source)
+  })
+
+  it('does not rewrite a call inside a comment', () => {
+    const source = '//@version=6\nindicator("t")\n// a.shift().delete()\nplot(close)'
+    assert.equal(repairDrawingDelete(source).repaired, false)
   })
 })

@@ -221,3 +221,48 @@ test('a rebuild paints the replacement before it removes the chart on screen', (
   assert.match(component, /visibility: hidden/)
   assert.match(component, /&--active/)
 })
+
+test('a study that draws a label paints it where its own bar is', () => {
+  // The library's shape API takes a chart time, and the resolver has already
+  // turned the runtime's bar index into that time. Drawing without the time
+  // would put every label at the epoch.
+  const draw = component.slice(component.indexOf('drawStudyDrawings'))
+  assert.match(draw, /chart\.createShape/)
+  assert.match(draw, /shape: 'text'/)
+  assert.match(draw, /label\.time \/ 1000/, 'the library counts seconds, the datafeed counts milliseconds')
+  // A study's labels are not the user's annotations: they must not be
+  // selectable, saved, or put on the undo stack.
+  assert.match(draw, /disableSelection: true/)
+  assert.match(draw, /disableSave: true/)
+  assert.match(draw, /disableUndo: true/)
+  // A tooltip-only label draws no box in Pine, and the text tool always draws
+  // one, so those are skipped rather than drawn empty.
+  assert.match(draw, /if \(!label\.boxed\) continue/)
+})
+
+test('a study that draws a table gets it drawn, since the library has no table tool', () => {
+  assert.match(component, /tv-chart__tables/)
+  assert.match(component, /tableRows\s*\(table\)/)
+  const rows = component.slice(component.indexOf('tableRows (table)'))
+  // The runtime hands back a sparse grid; the holes are part of the layout, so
+  // a missing cell must stay missing instead of sliding the next one left.
+  assert.match(rows, /byRow/)
+})
+
+test('a table is placed at the corner the script named', () => {
+  for (const position of ['top-right', 'top-left', 'bottom-right', 'bottom-left', 'middle-center', 'bottom-center']) {
+    assert.match(component, new RegExp(`&--${position}`), `no style for table position ${position}`)
+  }
+  // Pine's own names use underscores; the classes use hyphens.
+  assert.match(component, /position\.replace\(\/_\/g, '-'\)/)
+})
+
+test('the drawings belong to the study and go when it does', () => {
+  const teardown = component.slice(component.indexOf('teardown ()'))
+  assert.match(teardown, /this\.indicatorTables = \[\]/)
+  assert.match(teardown, /this\.drawnLabels = \[\]/)
+  // Redrawing without removing first would stack a second copy of every label
+  // on top of the first one.
+  const clear = component.slice(component.indexOf('clearStudyDrawings'))
+  assert.match(clear, /removeEntity/)
+})
