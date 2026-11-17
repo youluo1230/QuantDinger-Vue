@@ -71,6 +71,8 @@ export default {
       // mount), but the gap between `teardown` and `mount` is not: the new widget
       // is built behind the old one and only then does the old one go.
       hostSlot: 0,
+      // Resolves when the mounted widget has drawn its first bars.
+      whenReady: null,
       seriesCache: createSeriesCache(),
       // Bars, unlike the resolved plots, outlive a study rebuild: the same
       // symbol and timeframe answer every study the user checks and unchecks.
@@ -209,10 +211,28 @@ export default {
       // until the chart exists. `onChartReady` is the point at which
       // `createStudy` stops resolving to null; drawing earlier is a silent
       // no-op, which is exactly how the studies went missing before.
-      this.handle.widget.onChartReady?.(() => {
-        this.drawStudies()
-        this.drawPositionLines()
+      //
+      // It is also the earliest moment the widget has bars on screen, which is
+      // what a caller swapping this chart for a live one has to wait for: the
+      // constructor returning means the canvas exists, not that it has drawn
+      // anything, and revealing it then is the flash.
+      const ready = new Promise((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+        this.handle.widget.onChartReady?.(() => {
+          this.drawStudies()
+          this.drawPositionLines()
+          finish()
+        })
+        // A widget that never reports ready must not hang a rebuild forever; the
+        // studies are drawn by then anyway on every library build we carry.
+        setTimeout(finish, 1200)
       })
+      this.whenReady = ready
     },
     /**
      * Bring the drawn studies in line with the checked set.
@@ -479,8 +499,19 @@ export default {
         this.hostSlot = previousSlot
         return
       }
-      // The replacement is mounted and its container is the one the template now
-      // marks active; only after that does the old widget stop drawing.
+      // Mounted is not drawn: the constructor returns once the canvas exists, and
+      // its bars arrive afterwards. Revealing it at that point is the flash the
+      // user sees -- an empty pane over the old chart. Waiting for the ready
+      // signal is what makes the swap invisible.
+      try {
+        await this.whenReady
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('replacement chart never became ready', err)
+        }
+      }
+      // The replacement is drawn and its container is the one the template now
+      // marks active; only now does the old widget stop drawing.
       this.hostSlot = nextSlot
       await this.$nextTick()
       try {

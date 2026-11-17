@@ -61,9 +61,34 @@ const PINE_INTERVALS = {
  * unsupported period is the script's business to complain about, and inventing
  * one here would hide its error message.
  */
+/**
+ * The periods this deployment stores candles for.
+ *
+ * Kept next to the Pine translation rather than derived from it: the chart's own
+ * timeframes and the periods a script may name are different sets, and the second
+ * one includes periods no venue here indexes (`1M`, `3M`).
+ */
+const SERVICEABLE_TIMEFRAMES = new Set(['1M', '3M', '5M', '15M', '30M', '1H', '4H', '1D', '1W'])
+
 export function pineIntervalFor (timeframe) {
   const raw = String(timeframe || '').trim()
   return PINE_INTERVALS[raw] || raw || '1'
+}
+
+/**
+ * Pine's own period spelling, and the same period in the endpoint's vocabulary.
+ *
+ * These are the tokens a script writes directly -- `request.security(tickerid, "D",
+ * ...)`. Monthly is included because scripts do ask for it, and the two entries
+ * that the endpoint cannot serve are still named here: the provider degrades a
+ * period it cannot fetch to no bars rather than failing the study, so an
+ * unsupported month only blanks the lines that read it.
+ */
+const PINE_PERIOD_TOKENS = {
+  D: '1D',
+  W: '1W',
+  M: '1M',
+  '3M': '3M'
 }
 
 /**
@@ -82,7 +107,12 @@ export function timeframeForPineInterval (interval) {
   for (const [timeframe, token] of Object.entries(PINE_INTERVALS)) {
     if (token === raw) return timeframe
   }
-  return raw
+  // Pine spells day/week/month as a bare letter, and the endpoint spells them with
+  // a leading count. Without this a study that reads the daily timeframe asked for
+  // `timeframe=D` and the whole study failed on `unsupportedTimeframe` -- the
+  // library was never the problem, the period token was.
+  const bare = PINE_PERIOD_TOKENS[raw.toUpperCase()]
+  return bare || raw
 }
 
 /** Milliseconds in a UTC day; the bucket a daily-or-larger bar is keyed by. */
@@ -336,6 +366,12 @@ export async function loadStudyBars ({ market, symbol, timeframe, limit, exchang
   return rows.map(toPineBar).filter(Boolean)
 }
 
+/** Whether the bars endpoint can answer for this period. */
+function isServableTimeframe (timeframe) {
+  const token = String(timeframe || '').trim().toUpperCase()
+  return SERVICEABLE_TIMEFRAMES.has(token)
+}
+
 /**
  * A bar cache shared by every study on a chart, keyed by what identifies the
  * series rather than by which study asked.
@@ -446,10 +482,17 @@ export async function loadSeries ({
     loadBars: (security) => {
       // The runtime names timeframes the Pine way; the endpoint names them the
       // chart way, so the token is translated before the request is built.
+      const requested = timeframeForPineInterval(security.timeframe)
+      // A period this deployment has no series for is answered with no bars
+      // rather than an error: the request would otherwise fail with
+      // `unsupportedTimeframe` and take the whole study down, when only the
+      // lines that read this period are unknown. Pine's own `request.security`
+      // returns `na` in that case, and these scripts already handle `na`.
+      if (!isServableTimeframe(requested)) return Promise.resolve([])
       const args = {
         market,
         symbol,
-        timeframe: timeframeForPineInterval(security.timeframe),
+        timeframe: requested,
         limit: wanted,
         exchangeId,
         marketType,

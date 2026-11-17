@@ -929,3 +929,32 @@ describe('seriesKey with input values', () => {
     )
   })
 })
+
+describe('request.security periods', () => {
+  it('translates the period spellings a script writes by hand', () => {
+    // Pine names a day "D" and a week "W"; the candles endpoint names them "1D"
+    // and "1W". Passing the bare letter through failed the whole study with
+    // `unsupportedTimeframe`, which ids 75 through 177 of the stored corpus hit.
+    assert.equal(plots.timeframeForPineInterval('D'), '1D')
+    assert.equal(plots.timeframeForPineInterval('W'), '1W')
+    assert.equal(plots.timeframeForPineInterval('M'), '1M')
+    assert.equal(plots.timeframeForPineInterval('3M'), '3M')
+  })
+
+  it('still translates the resolution tokens the chart itself uses', () => {
+    assert.equal(plots.timeframeForPineInterval('60'), '1H')
+    assert.equal(plots.timeframeForPineInterval('240'), '4H')
+    assert.equal(plots.timeframeForPineInterval('15'), '15m')
+    assert.equal(plots.timeframeForPineInterval('1D'), '1D')
+  })
+})
+
+describe('a study that reads a period this deployment cannot serve', () => {
+  it('gets no bars instead of failing the whole study', () => {
+    // Monthly candles are not in the stored timeframes, and a script that reads
+    // them must still draw the rest of itself. The loader answers with no bars,
+    // which Pine already handles as `na`.
+    assert.match(source, /if \(!isServableTimeframe\(requested\)\) return Promise\.resolve\(\[\]\)/)
+    assert.match(source, /const SERVICEABLE_TIMEFRAMES = new Set\(/)
+  })
+})
