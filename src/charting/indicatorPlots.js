@@ -68,7 +68,7 @@ const PINE_INTERVALS = {
  * timeframes and the periods a script may name are different sets, and the second
  * one includes periods no venue here indexes (`1M`, `3M`).
  */
-const SERVICEABLE_TIMEFRAMES = new Set(['1M', '3M', '5M', '15M', '30M', '1H', '4H', '1D', '1W'])
+const SERVICEABLE_TIMEFRAMES = new Set(['1m', '3m', '5m', '15m', '30m', '1H', '4H', '1D', '1W'])
 
 export function pineIntervalFor (timeframe) {
   const raw = String(timeframe || '').trim()
@@ -368,8 +368,10 @@ export async function loadStudyBars ({ market, symbol, timeframe, limit, exchang
 
 /** Whether the bars endpoint can answer for this period. */
 function isServableTimeframe (timeframe) {
-  const token = String(timeframe || '').trim().toUpperCase()
-  return SERVICEABLE_TIMEFRAMES.has(token)
+  // Not upper-cased: `1M` is a month in Pine and `1m` is a minute in the
+  // endpoint, so folding the case would call a month serviceable and send a
+  // request the provider refuses.
+  return SERVICEABLE_TIMEFRAMES.has(String(timeframe || '').trim())
 }
 
 /**

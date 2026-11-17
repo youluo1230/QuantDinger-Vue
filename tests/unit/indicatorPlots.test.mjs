@@ -956,5 +956,10 @@ describe('a study that reads a period this deployment cannot serve', () => {
     // which Pine already handles as `na`.
     assert.match(source, /if \(!isServableTimeframe\(requested\)\) return Promise\.resolve\(\[\]\)/)
     assert.match(source, /const SERVICEABLE_TIMEFRAMES = new Set\(/)
+    // `1M` is a month in Pine and `1m` is a minute in the endpoint: the set has to
+    // be spelled the endpoint's way and compared without folding the case, or a
+    // monthly read is called serviceable and the provider refuses it.
+    assert.match(source, /const SERVICEABLE_TIMEFRAMES = new Set\(\['1m', '3m', '5m', '15m', '30m', '1H', '4H', '1D', '1W'\]\)/)
+    assert.doesNotMatch(source, /isServableTimeframe[\s\S]{0,200}toUpperCase/)
   })
 })
