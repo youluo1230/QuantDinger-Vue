@@ -182,16 +182,7 @@ export default {
       // The most recent socket bar, waiting for the next resolve slot.
       liveBar: null,
       liveResolveTimer: null,
-      positionLines: [],
-      // The IDE resizes the mounted chart after a fullscreen change by calling
-      // `chartRef.resize()`, a shape it inherited from the bundled canvas. The
-      // library resizes itself from its container, so this is the smallest
-      // object that keeps that call honest instead of throwing.
-      chartRef: {
-        resize: () => {
-          window.dispatchEvent(new Event('resize'))
-        }
-      }
+      positionLines: []
     }
   },
   computed: {
@@ -629,6 +620,18 @@ export default {
           console.debug('setChartType failed', err)
         }
       }
+    },
+    /**
+     * Ask the library to re-measure. It sizes itself from its container, so a
+     * layout change outside the chart (a fullscreen swap, the editor drawer
+     * opening) only needs this nudge.
+     */
+    resize () {
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.resize !== 'function') return
+      try {
+        chart.resize()
+      } catch (_) {}
     },
     /**
      * Listen for the controls the library now owns.

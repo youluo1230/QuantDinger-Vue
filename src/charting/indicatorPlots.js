@@ -839,10 +839,12 @@ function colourChannel (plot) {
 /**
  * Build the study descriptor the library expects from `custom_indicators_getter`.
  *
- * The custom-study contract is one `main` call per bar whose return value is the
- * plot values for that bar -- nothing is evaluated in the browser. `main` is
- * therefore a lookup, not a replay: it asks the library which bar it is being
- * called for and returns the precomputed row for that bar's time.
+ * The script has already run by the time this is built: `pineRuntime.js` executes
+ * it in the browser and returns the series. The study contract, however, cannot
+ * hand the library a batch of bars -- it calls `main` once per bar and takes the
+ * return value as that bar's plot. `main` is therefore a lookup, not a replay:
+ * it asks the library which bar it is being called for and returns the row that
+ * the runtime produced for that bar's time.
  *
  * Replaying by position is what used to be here, and it is wrong for three
  * distinct reasons, all of which this shape avoids:
