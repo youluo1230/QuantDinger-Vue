@@ -515,6 +515,7 @@ export default {
           if (entityId) {
             records.push({
               entityId,
+              indicatorId: Number(study.indicatorId || 0),
               name: study.name,
               key: study.key,
               descriptor: study,
@@ -595,6 +596,7 @@ export default {
           if (entityId) {
             this.studyRecords.push({
               entityId,
+              indicatorId: Number(study.indicatorId || 0),
               name: study.name,
               key: study.key,
               descriptor: study,
@@ -772,6 +774,14 @@ export default {
         // the record and the chart on the values they were showing.
         this.$set(this.studyParams, record.name, params)
         record.params = params
+        // The workspace archive has to carry the values the dialog produced;
+        // the parent stores them per indicator and saves them with the chart.
+        if (record.indicatorId > 0) {
+          this.$emit('indicator-params-change', {
+            indicatorId: record.indicatorId,
+            params: { ...params }
+          })
+        }
         // Deliberately the same descriptor: the library holds the `Study`
         // instance that descriptor built, and only that closure can refresh
         // what the chart is drawing.

@@ -28,14 +28,14 @@ test('editor leading code icon is an accessible collapse button using the existi
   assert.match(button, /<a-icon type="code"/)
 })
 
-test('indicator workspace exposes a constrained and persistent horizontal resizer', () => {
+test('indicator workspace exposes a constrained horizontal resizer', () => {
   assert.match(indicatorIdeSource, /class="ide-workspace-resizer"/)
   assert.match(indicatorIdeSource, /@mousedown="startWorkspaceResize"/)
   assert.match(indicatorIdeSource, /@dblclick="resetWorkspaceSplit"/)
   assert.match(indicatorIdeSource, /workspaceSplitBounds \(\)/)
   assert.match(indicatorIdeSource, /const codeMin = Math\.min\(420/)
   assert.match(indicatorIdeSource, /const chartMin = Math\.min\(520/)
-  assert.match(indicatorIdeSource, /workspaceSplitRatio: this\.workspaceSplitRatio/)
+  assert.match(indicatorIdeSource, /this\.workspaceSplitRatio = Math\.max\(bounds\.min, Math\.min\(bounds\.max/)
   assert.match(indicatorIdeSource, /<span>\{\{ \$t\('indicatorIde\.hideCode'\) \}\}<\/span>/)
 })
 
@@ -123,7 +123,7 @@ test('multi-chart layout keeps each chart instance scoped to its own container a
   assert.match(indicatorIdeSource, /v-for="\(pane, paneIndex\) in visibleChartPanes"/)
   assert.match(indicatorIdeSource, /chartLayoutMode: 1/)
   assert.match(indicatorIdeSource, /setChartLayoutMode \(mode\)/)
-  assert.match(indicatorIdeSource, /chartPanes: this\.serializeChartPanes\(\)/)
+  assert.match(indicatorIdeSource, /encodeWorkspace\(\{[\s\S]*?panes: this\.chartPanes/)
   // The runtime indicator list the bundled canvas needed is gone; a pane is
   // now identified by its checked ids and nothing has to be hydrated.
   assert.match(indicatorIdeSource, /paneIndicatorCount \(pane\)/)

@@ -423,6 +423,30 @@
                           </a-menu-item>
                         </a-menu>
                       </a-dropdown>
+
+                      <a-dropdown
+                        :trigger="['click']"
+                        placement="bottomRight"
+                        :get-popup-container="chartToolbarGetPopupContainer"
+                      >
+                        <a-tooltip :title="$t('indicatorIde.workspace.title')">
+                          <a-button
+                            size="small"
+                            class="chart-panel-action-btn ide-chart-workspace-btn"
+                            :class="{ 'ide-chart-workspace-btn--dirty': workspaceDirty }"
+                            :aria-label="$t('indicatorIde.workspace.title')"
+                          >
+                            <a-icon type="save" />
+                            <span class="ide-chart-workspace-name">{{ workspaceTemplateName || $t('indicatorIde.workspace.title') }}</span>
+                          </a-button>
+                        </a-tooltip>
+                        <a-menu slot="overlay" @click="onWorkspaceMenuClick">
+                          <a-menu-item key="save">{{ $t('indicatorIde.workspace.save') }}</a-menu-item>
+                          <a-menu-item key="saveAs">{{ $t('indicatorIde.workspace.saveAs') }}</a-menu-item>
+                          <a-menu-item key="open">{{ $t('indicatorIde.workspace.open') }}</a-menu-item>
+                          <a-menu-item key="delete" :disabled="!workspaceTemplateId">{{ $t('indicatorIde.workspace.delete') }}</a-menu-item>
+                        </a-menu>
+                      </a-dropdown>
                     </div>
                   </div>
                   <div class="chart-panel-toolbar-controls">
@@ -520,6 +544,7 @@
                           @symbol-change="payload => handlePaneSymbolChange(pane.id, payload)"
                           @interval-change="payload => handlePaneIntervalChange(pane.id, payload)"
                           @chart-type-change="payload => handlePaneChartTypeChange(pane.id, payload)"
+                          @indicator-params-change="payload => handlePaneIndicatorParamsChange(pane.id, payload)"
                         />
                       </div>
                     </div>
@@ -951,6 +976,55 @@
       </div>
       <pre class="ai-candidate-code-preview">{{ (aiCandidate && aiCandidate.code) || '' }}</pre>
     </a-modal>
+    <a-modal
+      :title="$t('indicatorIde.workspace.open')"
+      :visible="workspaceOpenVisible"
+      :footer="null"
+      width="560px"
+      :get-container="ideModalGetContainer"
+      :wrap-class-name="isDarkTheme ? 'ide-modal-wrap ide-modal-wrap--dark' : 'ide-modal-wrap'"
+      @cancel="workspaceOpenVisible = false"
+    >
+      <div class="ide-workspace-list">
+        <div v-if="!workspaceTemplates.length" class="ide-workspace-empty">
+          {{ $t('indicatorIde.workspace.empty') }}
+        </div>
+        <div
+          v-for="template in workspaceTemplates"
+          :key="template.id"
+          class="ide-workspace-row"
+          :class="{ 'ide-workspace-row--active': String(template.id) === workspaceTemplateId }"
+        >
+          <div class="ide-workspace-row-main">
+            <span class="ide-workspace-row-name">{{ template.name }}</span>
+            <span class="ide-workspace-row-meta">{{ template.updated_at }}</span>
+          </div>
+          <a-button size="small" type="link" @click="loadWorkspaceTemplate(template)">
+            {{ $t('indicatorIde.workspace.load') }}
+          </a-button>
+          <a-button size="small" type="link" @click="deleteWorkspaceTemplate(template)">
+            {{ $t('indicatorIde.workspace.remove') }}
+          </a-button>
+        </div>
+      </div>
+    </a-modal>
+    <a-modal
+      :title="$t('indicatorIde.workspace.saveAs')"
+      :visible="workspaceNameVisible"
+      :confirmLoading="workspaceSaving"
+      :okText="$t('indicatorIde.workspace.save')"
+      :cancelText="$t('dashboard.indicator.editor.cancel')"
+      :get-container="ideModalGetContainer"
+      :wrap-class-name="isDarkTheme ? 'ide-modal-wrap ide-modal-wrap--dark' : 'ide-modal-wrap'"
+      @ok="submitWorkspaceName"
+      @cancel="workspaceNameVisible = false"
+    >
+      <a-input
+        v-model="workspaceNameDraft"
+        :placeholder="$t('indicatorIde.workspace.namePlaceholder')"
+        @pressEnter="submitWorkspaceName"
+      />
+    </a-modal>
     <indicator-market-picker
       :visible="indicatorMarketVisible"
       :dark="isDarkTheme"
@@ -994,19 +1068,10 @@ import { applyCodeEditsToCodeMirror, applyExactCodeEdits, candidateCodeEditOpera
 import TradingViewChart from '@/components/TradingViewChart/index.vue'
 import QuickTradePanel from '@/components/QuickTradePanel/QuickTradePanel'
 import IndicatorMarketPicker from './components/IndicatorMarketPicker.vue'
+import { LAYOUT_MODES, encodeWorkspace, paneFromArchive, paramsFromWorkspace, workspaceFromLegacyState, workspaceFromTemplate } from './workspaceModel'
+import { deleteWorkspaceTemplate as requestDeleteWorkspace, listWorkspaceTemplates as requestWorkspaceList, saveWorkspaceTemplate as requestSaveWorkspace } from './workspaceApi'
 import { Modal } from 'ant-design-vue'
 import message from 'ant-design-vue/es/message'
-
-const TF_MAX_DAYS = {
-  '1m': 30,
-  '5m': 180,
-  '15m': 365,
-  '30m': 365,
-  '1H': 730,
-  '4H': 1460,
-  '1D': 3650,
-  '1W': 7300
-}
 
 function ideUiCacheStorageKey (userId) {
   const u = userId != null && userId !== '' ? String(userId) : '0'
@@ -1100,6 +1165,16 @@ export default {
       chartWorkspaceReady: false,
       applyingChartPaneState: false,
       chartIndicatorRunning: true,
+      workspaceTemplates: [],
+      workspaceTemplateId: '',
+      workspaceTemplateName: '',
+      workspaceDirty: false,
+      workspaceLoading: false,
+      workspaceSaving: false,
+      workspaceOpenVisible: false,
+      workspaceNameVisible: false,
+      workspaceNameDraft: '',
+      workspaceNameMode: 'saveAs',
       quickTradeDrawerVisible: false,
       quickTradeMinimized: false,
       quickTradePinned: false,
@@ -1372,14 +1447,11 @@ export default {
     await this.loadMarketModules()
     await this.loadTradingVenueConfig()
     await this.loadUserId()
-    this.restoreChartTypePreference()
     await this.initializeCryptoMarketSource()
-    this.loadIndicatorParamDefaults()
     await this.loadIndicators()
     await this.loadWatchlist()
-    this.restoreIdeUiState()
-    this.restoreIdeSelectionPreference()
     this.initializeChartWorkspace()
+    await this.bootstrapWorkspace()
     await this.refreshCryptoSymbolCapabilities()
     this.applyIndicatorRouteSelection()
     this.autoSelectFirstIndicator()
@@ -1427,11 +1499,7 @@ export default {
     this.stopWorkspaceResize()
     this.stopQuickTradeDrag()
     this.stopQuickTradeResize()
-    if (this._persistIdeUiTimer) {
-      clearTimeout(this._persistIdeUiTimer)
-      this._persistIdeUiTimer = null
-    }
-    if (!this._skipPersistOnDestroy) this.persistIdeUiState()
+    this.clearWorkspaceAutosave()
     multiTabEvents.$off('cache-evict', this.handleTabCacheEviction)
     if (this.cmInstance) {
       this.cmInstance.toTextArea()
@@ -1671,6 +1739,265 @@ export default {
         } catch (_) {}
       }
     },
+    // ===== Workspace archive =====
+    // The whole chart is what gets saved, not the indicator list: panes, the
+    // layout, which pane is active, whether the editor is open and every study's
+    // input values. `buildWorkspace` reduces the live panes to that snapshot and
+    // `applyWorkspace` is the only reader.
+    indicatorArchiveInfo (indicatorId) {
+      const indicator = this.indicators.find(item => Number(item.id) === Number(indicatorId))
+      if (!indicator) return { name: '', params: {} }
+      const code = this.getIndicatorExecutableCode(indicator)
+      return {
+        name: this.indicatorDisplayName(indicator),
+        params: this.resolveIndicatorRuntimeParams(indicator, code)
+      }
+    },
+    buildWorkspace () {
+      this.syncActivePaneFromWorkspace()
+      const activeIndex = this.visibleChartPanes.findIndex(pane => pane.id === this.activeChartPaneId)
+      return encodeWorkspace({
+        panes: this.chartPanes,
+        layoutMode: this.chartLayoutMode,
+        activePane: activeIndex,
+        editorOpen: this.codeDrawerVisible,
+        indicatorInfo: (id) => this.indicatorArchiveInfo(id)
+      })
+    },
+    async bootstrapWorkspace () {
+      if (!this.userId) return
+      this.workspaceLoading = true
+      try {
+        const templates = await requestWorkspaceList()
+        this.workspaceTemplates = templates
+        const legacy = this.collectLegacyWorkspace()
+        if (legacy) {
+          const saved = await requestSaveWorkspace({
+            name: this.$t('indicatorIde.workspace.migratedName'),
+            templateId: '',
+            workspace: legacy
+          })
+          if (saved) {
+            this.workspaceTemplateId = String(saved.id || '')
+            this.workspaceTemplateName = String(saved.name || '')
+            this.workspaceTemplates = [saved, ...templates]
+          }
+          this.clearLegacyWorkspaceKeys()
+          return
+        }
+        const latest = templates[0]
+        const workspace = workspaceFromTemplate(latest)
+        if (!workspace) return
+        this.workspaceTemplateId = String(latest.id || '')
+        this.workspaceTemplateName = String(latest.name || '')
+        this.applyWorkspace(workspace)
+      } catch (_) {
+        this.workspaceTemplates = []
+      } finally {
+        this.workspaceLoading = false
+      }
+    },
+    collectLegacyWorkspace () {
+      const read = (key) => {
+        const raw = storage.get(key)
+        if (raw == null || raw === '') return null
+        try {
+          return typeof raw === 'string' ? JSON.parse(raw) : raw
+        } catch (_) {
+          return null
+        }
+      }
+      const ui = read(ideUiCacheStorageKey(this.userId)) || {}
+      const params = read(indicatorParamDefaultsStorageKey(this.userId)) || {}
+      const selection = read(ideSelectionStorageKey(this.userId)) || null
+      const chartType = String(storage.get(chartTypeStorageKey(this.userId)) || '')
+      const hasPanes = Array.isArray(ui.chartPanes) && ui.chartPanes.length > 0
+      const hasIndicators = Array.isArray(ui.chartVisibleIndicatorIds) && ui.chartVisibleIndicatorIds.length > 0
+      if (!hasPanes && !selection && !Object.keys(params).length && !chartType && !hasIndicators) return null
+      const state = { ...ui }
+      if (!hasPanes && selection && selection.market && selection.symbol) {
+        state.chartPanes = [{
+          market: selection.market,
+          symbol: selection.symbol,
+          exchangeId: selection.exchangeId,
+          marketType: selection.marketType,
+          instrumentId: selection.instrumentId || selection.symbol,
+          timeframe: ui.timeframe || this.timeframe,
+          candleType: chartType || 'candle_solid',
+          visibleIndicatorIds: Array.isArray(selection.visibleIndicatorIds)
+            ? selection.visibleIndicatorIds
+            : (Array.isArray(ui.chartVisibleIndicatorIds) ? ui.chartVisibleIndicatorIds : [])
+        }]
+      }
+      return workspaceFromLegacyState(state, {
+        indicatorInfo: (id) => this.indicatorArchiveInfo(id),
+        chartType,
+        params
+      })
+    },
+    clearLegacyWorkspaceKeys () {
+      if (!this.userId) return
+      storage.remove(ideUiCacheStorageKey(this.userId))
+      storage.remove(ideSelectionStorageKey(this.userId))
+      storage.remove(indicatorParamDefaultsStorageKey(this.userId))
+      storage.remove(chartTypeStorageKey(this.userId))
+      storage.remove(cryptoMarketSourceStorageKey(this.userId))
+    },
+    applyWorkspace (workspace) {
+      if (!workspace || !Array.isArray(workspace.panes) || !workspace.panes.length) return
+      this.syncActivePaneFromWorkspace()
+      const mode = LAYOUT_MODES.includes(Number(workspace.layoutMode)) ? Number(workspace.layoutMode) : 1
+      const panes = []
+      for (let index = 0; index < 4; index++) {
+        const paneId = `pane-${index + 1}`
+        const current = this.chartPanes[index] || this.createChartPane(paneId, index ? panes[0] : {})
+        const entry = workspace.panes[index]
+        panes.push(entry ? paneFromArchive(entry, { ...current, id: paneId }) : { ...current, id: paneId })
+      }
+      this.chartLayoutMode = mode
+      this.chartPanes = panes
+      const activeIndex = Math.max(0, Math.min(Number(workspace.activePane) || 0, mode - 1))
+      this.activeChartPaneId = `pane-${activeIndex + 1}`
+      this.codeDrawerVisible = workspace.editorOpen !== false
+      this.indicatorParamOverrides = { ...(this.indicatorParamOverrides || {}), ...paramsFromWorkspace(workspace) }
+      this.workspaceDirty = false
+      this.applyChartPaneState(this.activeChartPaneId)
+      this.$nextTick(() => {
+        this.ensureChartReady()
+        window.setTimeout(() => this.refreshVisibleChartIndicators(), 900)
+      })
+    },
+    handleWorkspaceDirty () {
+      this.workspaceDirty = true
+      this.scheduleWorkspaceAutosave()
+    },
+    schedulePersistIdeUiState () {
+      this.handleWorkspaceDirty()
+    },
+    scheduleWorkspaceAutosave () {
+      if (this._workspaceAutosaveTimer) clearTimeout(this._workspaceAutosaveTimer)
+      this._workspaceAutosaveTimer = setTimeout(() => {
+        this._workspaceAutosaveTimer = null
+        this.persistWorkspace()
+      }, 2000)
+    },
+    clearWorkspaceAutosave () {
+      if (this._workspaceAutosaveTimer) {
+        clearTimeout(this._workspaceAutosaveTimer)
+        this._workspaceAutosaveTimer = null
+      }
+    },
+    async persistWorkspace () {
+      if (!this.userId || !this.workspaceTemplateId) return
+      if (this._workspaceSaveInFlight) {
+        this._workspaceSaveQueued = true
+        return
+      }
+      this._workspaceSaveInFlight = true
+      try {
+        const saved = await requestSaveWorkspace({
+          name: this.workspaceTemplateName || this.$t('indicatorIde.workspace.title'),
+          templateId: this.workspaceTemplateId,
+          workspace: this.buildWorkspace()
+        })
+        if (saved && saved.id) {
+          this.workspaceTemplateId = String(saved.id)
+          this.workspaceTemplateName = String(saved.name || this.workspaceTemplateName)
+        }
+        this.workspaceDirty = false
+      } catch (_) {
+        // Offline or rejected: the next edit schedules another attempt.
+      } finally {
+        this._workspaceSaveInFlight = false
+        if (this._workspaceSaveQueued) {
+          this._workspaceSaveQueued = false
+          this.scheduleWorkspaceAutosave()
+        }
+      }
+    },
+    onWorkspaceMenuClick ({ key }) {
+      if (key === 'save') return this.saveWorkspaceNow()
+      if (key === 'saveAs') return this.openWorkspaceNameDialog()
+      if (key === 'open') return this.openWorkspaceList()
+      if (key === 'delete') return this.removeCurrentWorkspace()
+      return undefined
+    },
+    async saveWorkspaceNow () {
+      if (!this.workspaceTemplateId) return this.openWorkspaceNameDialog()
+      this.workspaceSaving = true
+      try {
+        await this.persistWorkspace()
+        if (!this.workspaceDirty) this.$message.success(this.$t('indicatorIde.workspace.saved'))
+      } finally {
+        this.workspaceSaving = false
+      }
+      return undefined
+    },
+    openWorkspaceNameDialog () {
+      this.workspaceNameDraft = this.workspaceTemplateName || `${this.symbol || ''} ${this.timeframe || ''}`.trim()
+      this.workspaceNameVisible = true
+    },
+    openWorkspaceList () {
+      this.workspaceOpenVisible = true
+    },
+    async submitWorkspaceName () {
+      const name = String(this.workspaceNameDraft || '').trim()
+      if (!name) return
+      this.workspaceSaving = true
+      try {
+        const saved = await requestSaveWorkspace({ name, templateId: '', workspace: this.buildWorkspace() })
+        if (saved) {
+          this.workspaceTemplateId = String(saved.id || '')
+          this.workspaceTemplateName = String(saved.name || name)
+          this.workspaceDirty = false
+          this.workspaceTemplates = [saved, ...this.workspaceTemplates.filter(item => String(item.id) !== String(saved.id))]
+          this.$message.success(this.$t('indicatorIde.workspace.saved'))
+        }
+        this.workspaceNameVisible = false
+      } catch (err) {
+        this.$message.error(this.$t('indicatorIde.workspace.saveFailed'))
+      } finally {
+        this.workspaceSaving = false
+      }
+    },
+    async loadWorkspaceTemplate (template) {
+      const workspace = workspaceFromTemplate(template)
+      if (!workspace) return
+      this.workspaceTemplateId = String(template.id || '')
+      this.workspaceTemplateName = String(template.name || '')
+      this.applyWorkspace(workspace)
+      this.workspaceOpenVisible = false
+    },
+    async removeCurrentWorkspace () {
+      if (!this.workspaceTemplateId) return
+      const template = this.workspaceTemplates.find(item => String(item.id) === this.workspaceTemplateId)
+      if (!template) return
+      await this.deleteWorkspaceTemplate(template)
+    },
+    async deleteWorkspaceTemplate (template) {
+      const templateId = template && template.id
+      if (!templateId) return
+      try {
+        await requestDeleteWorkspace(templateId)
+        this.workspaceTemplates = this.workspaceTemplates.filter(item => String(item.id) !== String(templateId))
+        if (String(templateId) === this.workspaceTemplateId) {
+          this.workspaceTemplateId = ''
+          this.workspaceTemplateName = ''
+          this.workspaceDirty = true
+        }
+        this.$message.success(this.$t('indicatorIde.workspace.deleted'))
+      } catch (_) {
+        this.$message.error(this.$t('indicatorIde.workspace.deleteFailed'))
+      }
+    },
+    handlePaneIndicatorParamsChange (paneId, payload) {
+      const indicatorId = payload && payload.indicatorId
+      if (!indicatorId) return
+      const params = payload.params && typeof payload.params === 'object' ? payload.params : {}
+      this.$set(this.indicatorParamOverrides, String(indicatorId), params)
+      this.handleWorkspaceDirty()
+    },
+
     serializeChartPanes () {
       this.syncActivePaneFromWorkspace()
       return (this.chartPanes || []).slice(0, 4).map(pane => ({
@@ -1758,23 +2085,13 @@ export default {
       }
       this.schedulePersistIdeUiState()
     },
-    restoreChartTypePreference () {
-      const saved = storage.get(chartTypeStorageKey(this.userId))
-      if (supportedChartTypes.has(saved)) this.chartCandleType = saved
-    },
     handleTabCacheEviction (route) {
       const key = routeCacheKey(route)
       const path = route && typeof route === 'object' ? route.path : ''
       if (key !== 'IndicatorIDE' && path !== '/indicator-ide') return
 
       this._skipPersistOnDestroy = true
-      if (this._persistIdeUiTimer) {
-        clearTimeout(this._persistIdeUiTimer)
-        this._persistIdeUiTimer = null
-      }
-      if (!this.userId) return
-      storage.remove(ideUiCacheStorageKey(this.userId))
-      storage.remove(ideSelectionStorageKey(this.userId))
+      this.clearWorkspaceAutosave()
     },
     workspaceSplitBounds () {
       const container = this.$refs.ideMain
@@ -1965,191 +2282,6 @@ export default {
       } catch (_) {
         this.userId = 1
       }
-    },
-
-    restoreIdeUiState () {
-      if (!this.userId) return
-      try {
-        const raw = storage.get(ideUiCacheStorageKey(this.userId))
-        if (raw == null || raw === '') return
-        const s = typeof raw === 'string' ? JSON.parse(raw) : raw
-        if (!s || typeof s !== 'object') return
-        let hadChartVisibleKey = false
-        if (Array.isArray(s.chartVisibleIndicatorIds)) {
-          hadChartVisibleKey = true
-          const valid = s.chartVisibleIndicatorIds
-            .map(Number)
-            .filter(id => !isNaN(id) && this.indicators.some(i => Number(i.id) === id))
-          this.chartVisibleIndicatorIds = valid
-        }
-        if (s.timeframe && Object.prototype.hasOwnProperty.call(TF_MAX_DAYS, s.timeframe)) {
-          this.timeframe = s.timeframe
-        }
-        if ([1, 2, 4].includes(Number(s.chartLayoutMode))) {
-          this.chartLayoutMode = Number(s.chartLayoutMode)
-        }
-        if (Array.isArray(s.chartPanes)) {
-          this.chartPanes = s.chartPanes.slice(0, 4)
-        }
-        if (typeof s.activeChartPaneId === 'string' && s.activeChartPaneId) {
-          this.activeChartPaneId = s.activeChartPaneId
-        }
-        if (typeof s.quickTradeDrawerVisible === 'boolean') {
-          this.quickTradeDrawerVisible = this.liveTradingEnabled && s.quickTradeDrawerVisible
-        }
-        if (typeof s.quickTradeMinimized === 'boolean') this.quickTradeMinimized = s.quickTradeMinimized
-        if (typeof s.quickTradePinned === 'boolean') this.quickTradePinned = s.quickTradePinned
-        if (typeof s.codeDrawerVisible === 'boolean') this.codeDrawerVisible = s.codeDrawerVisible
-        if (Number.isFinite(Number(s.workspaceSplitRatio))) {
-          this.workspaceSplitRatio = Math.max(24, Math.min(72, Number(s.workspaceSplitRatio)))
-        }
-        if (s.quickTradePosition && Number.isFinite(Number(s.quickTradePosition.x)) && Number.isFinite(Number(s.quickTradePosition.y))) {
-          this.quickTradePosition = {
-            x: Number(s.quickTradePosition.x),
-            y: Number(s.quickTradePosition.y)
-          }
-        }
-        if (s.quickTradeSize && Number.isFinite(Number(s.quickTradeSize.width)) && Number.isFinite(Number(s.quickTradeSize.height))) {
-          this.quickTradeSize = {
-            width: Math.max(320, Number(s.quickTradeSize.width)),
-            height: Math.max(360, Number(s.quickTradeSize.height))
-          }
-        }
-        if (s.market && s.symbol) {
-          this.market = String(s.market)
-          this.symbol = String(s.symbol)
-          this.currentInstrumentId = String(s.instrument_id || s.instrumentId || '')
-          this.qtSymbol = this.symbol
-          this.selectedWatchlistKey = marketContextKey({
-            market: this.market,
-            symbol: this.symbol,
-            exchange_id: this.cryptoExchangeId,
-            market_type: this.cryptoMarketType,
-            instrument_id: this.currentInstrumentId
-          })
-        } else if (s.selectedWatchlistKey && typeof s.selectedWatchlistKey === 'string') {
-          const [m, sym] = s.selectedWatchlistKey.split(':')
-          if (m && sym) {
-            this.market = m
-            this.symbol = sym
-            this.qtSymbol = sym
-            this.selectedWatchlistKey = s.selectedWatchlistKey
-          }
-        }
-        if (s.selectedIndicatorId != null && s.selectedIndicatorId !== '') {
-          const id = Number(s.selectedIndicatorId)
-          if (!isNaN(id) && this.indicators.some(i => Number(i.id) === id)) {
-            this.selectedIndicatorId = id
-            this.onIndicatorChange(id)
-          }
-        }
-        if (!hadChartVisibleKey && !this.chartVisibleIndicatorIds.length && this.selectedIndicatorId != null) {
-          this.chartVisibleIndicatorIds = [Number(this.selectedIndicatorId)]
-          this.syncSelectedIndicatorToChart()
-        }
-        this.reconcileIdeMarketFromWatchlist()
-      } catch (_) { /* ignore corrupt cache */ }
-    },
-
-    schedulePersistIdeUiState () {
-      if (this._persistIdeUiTimer) clearTimeout(this._persistIdeUiTimer)
-      this._persistIdeUiTimer = setTimeout(() => {
-        this._persistIdeUiTimer = null
-        this.persistIdeUiState()
-      }, 250)
-    },
-
-    persistIdeUiState () {
-      if (!this.userId) return
-      try {
-        const payload = {
-          timeframe: this.timeframe,
-          chartLayoutMode: this.chartLayoutMode,
-          activeChartPaneId: this.activeChartPaneId,
-          chartPanes: this.serializeChartPanes(),
-          quickTradeDrawerVisible: this.liveTradingEnabled && this.quickTradeDrawerVisible,
-          quickTradeMinimized: this.quickTradeMinimized,
-          quickTradePinned: this.quickTradePinned,
-          quickTradePosition: this.quickTradePosition,
-          quickTradeSize: this.quickTradeSize,
-          codeDrawerVisible: this.codeDrawerVisible,
-          workspaceSplitRatio: this.workspaceSplitRatio
-        }
-        storage.set(ideUiCacheStorageKey(this.userId), JSON.stringify(payload))
-      } catch (_) { /* ignore quota */ }
-    },
-    restoreIdeSelectionPreference () {
-      if (!this.userId) return
-      try {
-        const raw = storage.get(ideSelectionStorageKey(this.userId))
-        if (raw == null || raw === '') return
-        const saved = typeof raw === 'string' ? JSON.parse(raw) : raw
-        if (!saved || typeof saved !== 'object') return
-
-        const market = String(saved.market || '')
-        const symbol = String(saved.symbol || '')
-        const savedContext = {
-          asset_id: Number(saved.assetId || saved.asset_id || 0),
-          market,
-          symbol,
-          exchange_id: saved.exchangeId || saved.exchange_id,
-          market_type: saved.marketType || saved.market_type,
-          instrument_id: saved.instrumentId || saved.instrument_id,
-          product_type: saved.productType || saved.product_type,
-          api_family: saved.apiFamily || saved.api_family,
-          underlying_market: saved.underlyingMarket || saved.underlying_market,
-          underlying_symbol: saved.underlyingSymbol || saved.underlying_symbol
-        }
-        const selectedRow = this.watchlist.find(item =>
-          (savedContext.asset_id > 0 && Number(item.asset_id) === savedContext.asset_id) ||
-          watchlistAssetKey(item) === watchlistAssetKey(savedContext))
-        if (market && symbol && selectedRow) {
-          this.market = market
-          this.symbol = symbol
-          this.currentAssetId = Number(selectedRow.asset_id || 0)
-          this.qtSymbol = symbol
-          this.selectedWatchlistKey = watchlistAssetKey(selectedRow)
-          this.cryptoExchangeId = market === 'Crypto'
-            ? this.normalizeCryptoExchange(saved.exchangeId || saved.exchange_id)
-            : this.cryptoExchangeId
-          this.cryptoMarketType = market === 'Crypto'
-            ? normalizeMarketType(saved.marketType || saved.market_type, 'Crypto')
-            : this.cryptoMarketType
-          this.currentInstrumentId = String(saved.instrumentId || saved.instrument_id || '')
-          this.applyCurrentProductContext(selectedRow || savedContext)
-        }
-
-        const indicatorId = Number(saved.indicatorId)
-        if (indicatorId && this.indicators.some(item => Number(item.id) === indicatorId)) {
-          this.selectedIndicatorId = indicatorId
-          const visibleIds = Array.isArray(saved.visibleIndicatorIds)
-            ? saved.visibleIndicatorIds
-              .map(Number)
-              .filter(id => this.indicators.some(item => Number(item.id) === id))
-            : []
-          this.chartVisibleIndicatorIds = visibleIds.length ? visibleIds : [indicatorId]
-          this.onIndicatorChange(indicatorId)
-        }
-      } catch (_) { /* ignore corrupt preference */ }
-    },
-    persistIdeSelectionPreference () {
-      if (!this.userId) return
-      try {
-        storage.set(ideSelectionStorageKey(this.userId), JSON.stringify({
-          market: this.market,
-          symbol: this.symbol,
-          assetId: this.currentAssetId,
-          exchangeId: this.market === 'Crypto' ? this.cryptoExchangeId : '',
-          marketType: this.market === 'Crypto' ? this.cryptoMarketType : 'spot',
-          instrumentId: this.currentInstrumentId,
-          productType: this.currentProductType,
-          apiFamily: this.currentApiFamily,
-          underlyingMarket: this.currentUnderlyingMarket,
-          underlyingSymbol: this.currentUnderlyingSymbol,
-          indicatorId: this.selectedIndicatorId,
-          visibleIndicatorIds: this.chartVisibleIndicatorIds
-        }))
-      } catch (_) { /* ignore quota */ }
     },
 
     async loadIndicators ({ background = false } = {}) {
@@ -2352,22 +2484,6 @@ export default {
         if (value !== undefined) out[spec.name] = value
       }
       return out
-    },
-    loadIndicatorParamDefaults () {
-      if (!this.userId) return
-      try {
-        const raw = storage.get(indicatorParamDefaultsStorageKey(this.userId))
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-        this.indicatorParamOverrides = parsed && typeof parsed === 'object' ? parsed : {}
-      } catch (_) {
-        this.indicatorParamOverrides = {}
-      }
-    },
-    persistIndicatorParamDefaults () {
-      if (!this.userId) return
-      try {
-        storage.set(indicatorParamDefaultsStorageKey(this.userId), JSON.stringify(this.indicatorParamOverrides || {}))
-      } catch (_) { /* ignore quota */ }
     },
     resolveIndicatorRuntimeParams (indicator, code) {
       if (!indicator) return {}
@@ -2767,7 +2883,7 @@ export default {
       this.selectedIndicatorId = local.id
       this.chartVisibleIndicatorIds = [Number(local.id)]
       this.onIndicatorChange(local.id)
-      this.persistIdeSelectionPreference()
+      this.handleWorkspaceDirty()
     },
     onChartIndicatorCheckChange (rawId, checked) {
       const id = Number(rawId)
@@ -2780,7 +2896,7 @@ export default {
         this.chartVisibleIndicatorIds = this.chartVisibleIndicatorIds.filter(x => Number(x) !== id)
       }
       this.syncSelectedIndicatorToChart()
-      this.persistIdeSelectionPreference()
+      this.handleWorkspaceDirty()
     },
     selectEditorIndicator (rawId) {
       this.indicatorDropdownVisible = false
@@ -2799,7 +2915,7 @@ export default {
         this.chartVisibleIndicatorIds = [...(this.chartVisibleIndicatorIds || []), id]
       }
       this.onIndicatorChange(rawId)
-      this.persistIdeSelectionPreference()
+      this.handleWorkspaceDirty()
     },
     resolveIdeFullscreenMountNode () {
       const fs = document.fullscreenElement || document.webkitFullscreenElement
@@ -7141,6 +7257,56 @@ body.dark .ide-signal-alert-modal-wrap {
     flex: 1 1 100% !important;
     border-right: none !important;
   }
+}
+
+.ide-chart-workspace-btn {
+  max-width: 190px;
+}
+.ide-chart-workspace-btn .ide-chart-workspace-name {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ide-chart-workspace-btn--dirty {
+  border-color: #faad14 !important;
+  color: #ad6800 !important;
+}
+.ide-workspace-list {
+  max-height: 55vh;
+  overflow-y: auto;
+}
+.ide-workspace-empty {
+  padding: 24px 0;
+  text-align: center;
+  color: #8c8c8c;
+}
+.ide-workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(0, 0, 0, .06);
+}
+.ide-workspace-row--active {
+  background: rgba(24, 144, 255, .08);
+}
+.ide-workspace-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ide-workspace-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.ide-workspace-row-meta {
+  font-size: 11px;
+  color: #8c8c8c;
 }
 
 .ide-chart-layout-trigger {

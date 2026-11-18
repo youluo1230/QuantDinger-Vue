@@ -6,7 +6,21 @@ const en = {
   'indicatorIde.multiChart.dual': 'Two charts',
   'indicatorIde.multiChart.quad': 'Four charts',
   'indicatorIde.multiChart.activatePane': 'Activate chart {n}',
-  'indicatorIde.multiChart.indicatorCount': '{n} indicators'
+  'indicatorIde.multiChart.indicatorCount': '{n} indicators',
+  'indicatorIde.workspace.title': 'Workspace',
+  'indicatorIde.workspace.save': 'Save workspace',
+  'indicatorIde.workspace.saveAs': 'Save workspace as…',
+  'indicatorIde.workspace.open': 'Open workspace',
+  'indicatorIde.workspace.delete': 'Delete current workspace',
+  'indicatorIde.workspace.load': 'Load',
+  'indicatorIde.workspace.remove': 'Delete',
+  'indicatorIde.workspace.empty': 'No saved workspaces yet.',
+  'indicatorIde.workspace.namePlaceholder': 'Workspace name',
+  'indicatorIde.workspace.saved': 'Workspace saved',
+  'indicatorIde.workspace.saveFailed': 'Could not save the workspace',
+  'indicatorIde.workspace.deleted': 'Workspace deleted',
+  'indicatorIde.workspace.deleteFailed': 'Could not delete the workspace',
+  'indicatorIde.workspace.migratedName': 'Restored workspace'
 }
 
 export default {
@@ -19,7 +33,21 @@ export default {
     'indicatorIde.multiChart.dual': '双屏',
     'indicatorIde.multiChart.quad': '四屏',
     'indicatorIde.multiChart.activatePane': '激活第 {n} 个图表',
-    'indicatorIde.multiChart.indicatorCount': '{n} 个指标'
+    'indicatorIde.multiChart.indicatorCount': '{n} 个指标',
+    'indicatorIde.workspace.title': '工作区',
+    'indicatorIde.workspace.save': '保存工作区',
+    'indicatorIde.workspace.saveAs': '工作区另存为…',
+    'indicatorIde.workspace.open': '打开工作区',
+    'indicatorIde.workspace.delete': '删除当前工作区',
+    'indicatorIde.workspace.load': '加载',
+    'indicatorIde.workspace.remove': '删除',
+    'indicatorIde.workspace.empty': '还没有保存过工作区。',
+    'indicatorIde.workspace.namePlaceholder': '工作区名称',
+    'indicatorIde.workspace.saved': '工作区已保存',
+    'indicatorIde.workspace.saveFailed': '工作区保存失败',
+    'indicatorIde.workspace.deleted': '工作区已删除',
+    'indicatorIde.workspace.deleteFailed': '工作区删除失败',
+    'indicatorIde.workspace.migratedName': '恢复的工作区'
   },
   'zh-TW': {
     'indicatorIde.resizeWorkspace': '調整程式碼區與 K 線區寬度',

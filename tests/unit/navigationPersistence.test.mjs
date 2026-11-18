@@ -49,13 +49,16 @@ test('closing a multi-tab page destroys only its matching keep-alive entry', () 
   assert.match(routeView, /this\.\$nextTick\(this\.flushPendingCacheEvictions\)/)
 })
 
-test('closing indicator workspace clears its persisted page state', () => {
+test('closing indicator workspace stops the autosave instead of writing page state', () => {
   const indicatorIde = read('src/views/indicator-ide/index.vue')
 
   assert.match(indicatorIde, /multiTabEvents\.\$on\('cache-evict', this\.handleTabCacheEviction\)/)
-  assert.match(indicatorIde, /storage\.remove\(ideUiCacheStorageKey\(this\.userId\)\)/)
-  assert.match(indicatorIde, /storage\.remove\(ideSelectionStorageKey\(this\.userId\)\)/)
-  assert.match(indicatorIde, /if \(!this\._skipPersistOnDestroy\) this\.persistIdeUiState\(\)/)
+  assert.match(indicatorIde, /handleTabCacheEviction \(route\) \{[\s\S]*?this\.clearWorkspaceAutosave\(\)/)
+  // Page state now lives in the workspace archive, not in per-page keys. The
+  // legacy keys are only deleted once, when the archive adopts them.
+  assert.doesNotMatch(indicatorIde, /persistIdeUiState/)
+  assert.match(indicatorIde, /clearLegacyWorkspaceKeys \(\) \{[\s\S]*?storage\.remove\(ideUiCacheStorageKey\(this\.userId\)\)/)
+  assert.match(indicatorIde, /clearLegacyWorkspaceKeys \(\) \{[\s\S]*?storage\.remove\(ideSelectionStorageKey\(this\.userId\)\)/)
 })
 
 test('multi-tab workspaces are enabled for users without a saved preference', () => {
