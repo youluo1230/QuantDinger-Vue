@@ -637,3 +637,50 @@ export function repairDrawingDelete (source) {
   }
   return { code: out, repaired: changed }
 }
+
+/**
+ * Rewrite `<expr>.first()` / `<expr>.last()` to answer `na` on an empty array.
+ *
+ * Real Pine returns `na` when the collection is empty -- `label.all.first()` is
+ * how the corpus asks "where is my leftmost drawing", and the common answer is
+ * "there is none yet". The runtime throws instead (`Cannot call `first()` if
+ * array is empty.`), which takes the whole study down for a question the script
+ * already knows how to answer. The guard is the ternary form because both
+ * `array.first(a)` and `array.get(a, size - 1)` throw on the same input.
+ */
+export function repairEmptyCollectionRead (source) {
+  const text = String(source || '')
+  if (!text.trim()) return { code: text, repaired: false }
+  const ranges = maskedRanges(text)
+  // `label.all.first()` and `arr.last()`, but not `str.split(',').first()`:
+  // the receiver must be an identifier or a dotted name.
+  // The chain that follows the read is captured too: Pine allows
+  // `label.all.first().get_x()`, and the guard has to wrap the whole chain.
+  // `(cond ? a : na).get_x()` does not parse, so the rewrite is
+  // `cond ? a.get_x() : na` -- `na` answers for every method Pine defines on a
+  // drawing, which is exactly the point.
+  const callRe = /([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.(?:first|last)\(\s*\))((?:\s*\.[A-Za-z_]\w*\s*\([^()]*\))*)/g
+  const edits = []
+  for (const match of text.matchAll(callRe)) {
+    const at = match.index
+    if (inRanges(ranges, at)) continue
+    const call = match[1]
+    const chain = match[2] || ''
+    // `x.first()` -> `array.size(x) > 0 ? x.first() : na`
+    const receiver = call.slice(0, call.lastIndexOf('.'))
+    edits.push({
+      from: at,
+      to: at + call.length + chain.length,
+      text: `array.size(${receiver}) > 0 ? ${call}${chain} : na`
+    })
+  }
+  if (!edits.length) return { code: text, repaired: false }
+  let out = text
+  let changed = false
+  for (const edit of edits.sort((a, b) => b.from - a.from)) {
+    if (out.slice(edit.from, edit.to) === edit.text) continue
+    out = out.slice(0, edit.from) + edit.text + out.slice(edit.to)
+    changed = true
+  }
+  return { code: out, repaired: changed }
+}

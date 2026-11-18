@@ -17,7 +17,7 @@
  */
 
 import { importPaths, missingLibraries, pineImportResolver } from './pineLibraries.js'
-import { repairDrawingDelete, repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
+import { repairDrawingDelete, repairEmptyCollectionRead, repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
 
 /** Bars per study computation. Beyond this the cost stops being imperceptible. */
 export const DEFAULT_STUDY_BARS = 1500
@@ -45,6 +45,16 @@ const DYNAMIC_ACCESS_RE = /dynamic computed member access/
  * a no-op. Matched on text for the same reason as the pattern above.
  */
 const NULL_DELETE_RE = /reading 'delete'/
+
+/**
+ * The runtime refusing to read first()/last() off an empty array.
+ *
+ * Real Pine answers `na` there, and scripts lean on it: `label.all.first()` is
+ * the idiomatic "where is my leftmost drawing", whose usual answer is "there
+ * is none yet". The runtime throws, which takes the whole study down for a
+ * question the script already knows how to answer.
+ */
+const EMPTY_COLLECTION_RE = /if array is empty/
 
 /**
  * A bar time in milliseconds, or null when the value is not a plausible time.
@@ -611,10 +621,10 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
   } catch (error) {
     const translated = translateImportError(error, source)
     if (translated !== error) throw translated
-    // Two limitations get one retry each, and only the one that raised: a
-    // script that ran is never rewritten, so the 140-odd scripts that work
-    // today keep running byte-identically. `repair` returns the same text when
-    // it has nothing to do, and that is what re-raises the original error.
+    // Each limitation gets one retry, and only the one that raised: a script
+    // that ran is never rewritten, so the 140-odd scripts that work today keep
+    // running byte-identically. `repair` returns the same text when it has
+    // nothing to do, and that is what re-raises the original error.
     const message = String(error && error.message || error)
     let repaired = { code: source, repaired: false }
     if (DYNAMIC_ACCESS_RE.test(message)) {
@@ -623,6 +633,9 @@ export async function runPineStudy ({ code, bars, symbol = 'BTC/USDT', timeframe
     } else if (NULL_DELETE_RE.test(message)) {
       repaired = repairDrawingDelete(source)
       repairedFor = 'drawing-delete'
+    } else if (EMPTY_COLLECTION_RE.test(message)) {
+      repaired = repairEmptyCollectionRead(source)
+      repairedFor = 'empty-collection'
     }
     if (!repaired.repaired) throw error
     const retry = new Indicator(repaired.code)

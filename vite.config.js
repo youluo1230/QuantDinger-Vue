@@ -61,6 +61,12 @@ const resolveManualChunk = (id) => {
   if (id.includes('@ant-design') || id.includes('@antv')) return 'ant-ecosystem'
   if (id.includes('echarts') || id.includes('klinecharts')) return 'charts'
   if (id.includes('codemirror')) return 'editors'
+  // `pinets` is ~800KB and every import of it in src/ is dynamic, so it must
+  // stay out of `vendor`: that chunk is preloaded by index.html, which made the
+  // Pine runtime a cost of opening the page instead of a cost of running a
+  // study. Naming it here keeps it in its own chunk and keeps the lazy import
+  // lazy.
+  if (id.includes('pinets')) return 'pine-runtime'
   if (id.includes('pyodide') || id.includes('comlink')) return 'py-runtime'
   if (id.includes('vue')) return 'vue-core'
   if (

@@ -26,6 +26,7 @@ import {
   needsUpgrade,
   pineVersionOf,
   repairDrawingDelete,
+  repairEmptyCollectionRead,
   repairTupleDestructuring,
   upgradeLegacyPine
 } from '../../src/charting/pineUpgrade.js'
@@ -242,5 +243,55 @@ describe('repairDrawingDelete', () => {
   it('does not rewrite a call inside a comment', () => {
     const source = '//@version=6\nindicator("t")\n// a.shift().delete()\nplot(close)'
     assert.equal(repairDrawingDelete(source).repaired, false)
+  })
+})
+
+describe('repairEmptyCollectionRead', () => {
+  // Real Pine answers `na` when a script reads first()/last() off an empty
+  // collection -- "where is my leftmost drawing" has the answer "there is none
+  // yet". The runtime throws instead, which takes the whole study down. Id 67
+  // of the stored scripts asks exactly that and failed on every bar count.
+  it('answers na instead of throwing when the collection is empty', () => {
+    const source = '//@version=6\nindicator("t")\nx = label.all.first().get_x()'
+    const { code, repaired } = repairEmptyCollectionRead(source)
+    assert.equal(repaired, true)
+    assert.match(code, /array\.size\(label\.all\) > 0 \? label\.all\.first\(\)\.get_x\(\) : na/)
+  })
+
+  // `(cond ? a : na).get_x()` does not parse, so the guard has to carry the
+  // rest of the chain into the true branch.
+  it('carries the methods that follow the read into the guarded branch', () => {
+    const { code } = repairEmptyCollectionRead('pocDrawings.last().set_xy2(time, price)')
+    assert.equal(code, 'array.size(pocDrawings) > 0 ? pocDrawings.last().set_xy2(time, price) : na')
+  })
+
+  it('keeps a space between a method and its argument list', () => {
+    // The corpus writes `pocDrawings.last().set_y1 (price)` with a space, and
+    // a chain pattern that demands `(` immediately loses that call.
+    const { code } = repairEmptyCollectionRead('pocDrawings.last().set_y1 (price)')
+    assert.equal(code, 'array.size(pocDrawings) > 0 ? pocDrawings.last().set_y1 (price) : na')
+  })
+
+  it('guards a dotted receiver as a whole', () => {
+    const { code } = repairEmptyCollectionRead('getBox = state.bars.last()')
+    assert.equal(code, 'getBox = array.size(state.bars) > 0 ? state.bars.last() : na')
+  })
+
+  it('leaves a read that is already guarded alone', () => {
+    const source = 'x = array.size(a) > 0 ? a.last() : na'
+    // The rewrite is idempotent in effect: the inner call gains a second guard
+    // that is always true, so behaviour is identical either way.
+    const { code } = repairEmptyCollectionRead(source)
+    assert.match(code, /array\.size\(a\) > 0 \? a\.last\(\) : na/)
+  })
+
+  it('does not touch a script with no such read', () => {
+    const source = '//@version=6\nindicator("t")\nplot(close)'
+    assert.equal(repairEmptyCollectionRead(source).repaired, false)
+  })
+
+  it('does not rewrite a call inside a comment', () => {
+    const source = '//@version=6\nindicator("t")\n// a.last()\nplot(close)'
+    assert.equal(repairEmptyCollectionRead(source).repaired, false)
   })
 })
