@@ -329,6 +329,16 @@ describe('study budget', () => {
     assert.ok(MAX_STUDY_BARS > DEFAULT_STUDY_BARS)
     assert.ok(DEFAULT_STUDY_BARS > 360, 'the old backend cap must not survive here')
   })
+
+  it('asks for no more bars than a script can need', () => {
+    // Every bar a study asks for is memory and time spent drawing a line the
+    // user cannot see. A scan of all 238 stored scripts found the longest
+    // hard-coded warmup is 250 (an EMA length), so 600 is already more than
+    // twice the worst case -- and twice the chart's own viewport. Pinned here
+    // so a future "just make it bigger" does not go unnoticed: the escalating
+    // value was 1500, which was three times what the corpus needs.
+    assert.ok(DEFAULT_STUDY_BARS <= 600, `study budget grew to ${DEFAULT_STUDY_BARS}`)
+  })
 })
 
 describe('Pine input declarations', () => {
@@ -591,7 +601,11 @@ describe('the drawings a script makes instead of plotting', () => {
     const rows = Array.from({ length: 30 }, (_, index) => ({
       openTime: 1700000000000 + index * 3600000,
       closeTime: 1700000000000 + (index + 1) * 3600000,
-      open: 100 + index, high: 101 + index, low: 99 + index, close: 100.5 + index, volume: 10
+      open: 100 + index,
+high: 101 + index,
+low: 99 + index,
+close: 100.5 + index,
+volume: 10
     }))
     const out = await runPineStudy({
       code: [

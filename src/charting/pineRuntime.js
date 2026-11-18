@@ -19,8 +19,17 @@
 import { importPaths, missingLibraries, pineImportResolver } from './pineLibraries.js'
 import { repairDrawingDelete, repairEmptyCollectionRead, repairTupleDestructuring, upgradeLegacyPine } from './pineUpgrade.js'
 
-/** Bars per study computation. Beyond this the cost stops being imperceptible. */
-export const DEFAULT_STUDY_BARS = 1500
+/**
+ * Bars per study computation.
+ *
+ * This is a ceiling the study asks the endpoint for, so every extra bar is
+ * memory and time spent drawing a line the user cannot see. 600 is twice the
+ * chart's own viewport (`DEFAULT_BARS` in datafeed.js) and more than twice the
+ * longest warmup any stored script declares: a scan of all 238 rows of the
+ * indicator table found the largest hard-coded length is 250 (an EMA), with
+ * nothing above 500. 1500 was three times the requirement.
+ */
+export const DEFAULT_STUDY_BARS = 600
 
 /** Hard ceiling, so a stray `limit` cannot freeze the tab. */
 export const MAX_STUDY_BARS = 20000

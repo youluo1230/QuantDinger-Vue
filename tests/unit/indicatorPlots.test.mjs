@@ -44,7 +44,7 @@ const stubbed = source
       'const qdPine = () => globalThis.__qdPine || {',
       '  runPineStudy: async () => ({ plots: [], signals: [], candleTimes: [] })',
       '}',
-      'const DEFAULT_STUDY_BARS = 1500',
+      'const DEFAULT_STUDY_BARS = 600',
       'const MAX_STUDY_BARS = 20000',
       'const runPineStudy = (...args) => qdPine().runPineStudy(...args)',
       'const toPineBar = (row) => {',
