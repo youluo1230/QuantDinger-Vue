@@ -389,3 +389,14 @@ test('a failed re-evaluation keeps the old input values', () => {
   const remembered = settings.indexOf('this.$set(this.studyParams, record.name, params)')
   assert.ok(evaluated > -1 && remembered > evaluated, 'the override is recorded only after the script ran')
 })
+
+test('a four-pane layout drops the header controls that no longer fit', () => {
+  // Four panes mean four native headers; compare, screenshot and undo/redo are
+  // the controls that stop fitting, so a dense layout trades them for height.
+  const options = read('src/charting/tradingview.js')
+  assert.match(options, /\.\.\.\(compactHeader \? \['header_compare', 'header_screenshot', 'header_undo_redo'\] : \[\]\)/)
+  assert.match(component, /compactHeader: this\.compactHeader/)
+  assert.match(component, /compactHeader \(\) \{[\s\S]*?this\.remount\(\)/)
+  const ide = read('src/views/indicator-ide/index.vue')
+  assert.match(ide, /:compact-header="chartLayoutMode === 4"/)
+})

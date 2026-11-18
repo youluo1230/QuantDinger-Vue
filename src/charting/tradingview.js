@@ -72,6 +72,7 @@ export function buildWidgetOptions ({
   timeframe = '1H',
   theme = 'dark',
   locale = 'zh',
+  compactHeader = false,
   customIndicators = [],
   onRealtimeBar,
   onSymbolResolved,
@@ -114,7 +115,11 @@ export function buildWidgetOptions ({
     // The library renders its own loading and error states; ours would flicker
     // on every symbol change, so they are suppressed.
     loading_screen: { backgroundColor: theme === 'dark' ? '#131722' : '#ffffff' },
+    // Four panes put four native headers on one screen; compare, screenshot
+    // and undo/redo are the controls that stop fitting, so a dense layout
+    // trades them for chart height instead of squeezing them.
     disabled_features: [
+      ...(compactHeader ? ['header_compare', 'header_screenshot', 'header_undo_redo'] : []),
       'use_localstorage_for_settings',
       'show_symbol_logo_in_legend',
       'legend_inplace_edit'

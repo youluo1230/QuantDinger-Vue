@@ -119,6 +119,7 @@ export default {
     // rather than the last saved version.
     indicators: { type: Array, default: () => [] },
     candleType: { type: String, default: 'candle_solid' },
+    compactHeader: { type: Boolean, default: false },
     // Entry levels of the quick-trade positions, as `{side, size, entryPrice,
     // costLabel, entryLabel}`. Drawn as price lines because a horizontal level
     // is what the trader reads; the bundled canvas drew them as overlays.
@@ -222,6 +223,10 @@ export default {
     theme () {
       this.remount()
     },
+    compactHeader () {
+      // Which header controls are enabled cannot change after construction.
+      this.remount()
+    },
     candleType () {
       // The style is a property of the chart, not of the data: switching it
       // must not rebuild the widget or re-run a single script.
@@ -312,6 +317,7 @@ export default {
           timeframe: this.timeframe,
           theme: this.theme,
           locale: this.locale,
+          compactHeader: this.compactHeader,
           customIndicators: () => this.loadIndicators(),
           barStore: this.barStore,
           // The datafeed sees a symbol change before the chart does, and its

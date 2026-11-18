@@ -539,6 +539,7 @@
                           :timeframe="pane.timeframe"
                           :theme="chartTheme"
                           :candle-type="pane.candleType"
+              :compact-header="chartLayoutMode === 4"
                           :indicators="tvPaneIndicators(pane)"
                           :quick-trade-positions="pane.id === activeChartPaneId ? quickTradeChartPositions : []"
                           @indicator-error="handleTvIndicatorError"
