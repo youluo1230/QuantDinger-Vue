@@ -8,8 +8,9 @@
  *
  * The datafeed behind it is ours (`src/charting/datafeed.js`), so every symbol
  * resolution, bar request and realtime push goes through the same backend the
- * rest of the app uses. Indicators are drawn by the backend, not by Pine running
- * in this process -- see `indicatorPlots.js`.
+ * rest of the app uses. The studies it draws are Pine scripts executed in this
+ * browser by the runtime in `pineRuntime.js`; nothing about them is computed
+ * server-side.
  */
 
 import { createBarStore, createDatafeed, buildSymbolInfo } from './datafeed'
@@ -73,6 +74,7 @@ export function buildWidgetOptions ({
   locale = 'zh',
   customIndicators = [],
   onRealtimeBar,
+  onSymbolResolved,
   barStore = null
 } = {}) {
   // `customIndicators` may be a ready array or a loader, because the studies
@@ -97,6 +99,7 @@ export function buildWidgetOptions ({
     instrumentId,
     timeframe,
     onRealtimeBar,
+    onSymbolResolved,
     barStore
   })
   return {
@@ -142,6 +145,33 @@ export function intervalFor (timeframe) {
     '1D': '1D',
     '1W': '1W'
   }[String(timeframe || '').trim()] || '60'
+}
+
+/**
+ * Library series type for a chart type name.
+ *
+ * The IDE keeps naming chart types the way the bundled canvas named them; the
+ * library exposes `SeriesType` numbers instead. Several canvas styles collapse
+ * onto one library series (every candle variant is a candle, refined later by
+ * overrides), and the two the library has no chart type for fall back to
+ * candles rather than to a silently different picture.
+ */
+const CHART_SERIES_TYPES = {
+  candle_solid: 1,
+  candle_stroke: 1,
+  candle_up_stroke: 1,
+  candle_down_stroke: 1,
+  ohlc: 0,
+  line: 2,
+  area: 3,
+  hlc_area: 3,
+  heikin_ashi: 8,
+  renko: 4,
+  range: 1
+}
+
+export function seriesTypeFor (chartType) {
+  return CHART_SERIES_TYPES[String(chartType || '').trim()] || 1
 }
 
 /**

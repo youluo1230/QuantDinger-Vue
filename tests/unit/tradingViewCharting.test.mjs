@@ -266,3 +266,126 @@ test('the drawings belong to the study and go when it does', () => {
   const clear = component.slice(component.indexOf('clearStudyDrawings'))
   assert.match(clear, /removeEntity/)
 })
+
+test('the library search is answered by the datafeed', () => {
+  // `header_symbol_search` is unfrozen, and the bundle calls `searchSymbols`
+  // unconditionally, so a datafeed without it throws on the first keystroke.
+  assert.match(datafeed, /async searchSymbols \(userInput, exchange, symbolType, onResult, onError\)/)
+  assert.match(datafeed, /url: '\/api\/market\/symbols\/search'/)
+  assert.match(datafeed, /keyword,/)
+  // Each hit is encoded with the venue that produced it, or picking a swap
+  // instrument from the spot list would chart a different market.
+  assert.match(datafeed, /const ticker = encodeSymbolTicker\(/)
+})
+
+test('the encoded ticker is identity, the instrument is what gets fetched', () => {
+  // The candles endpoint and the venue socket both take the human instrument;
+  // the `QD:` ticker only has to survive `resolveSymbol` round trips.
+  assert.match(datafeed, /symbol: symbolInfo\.instrument \|\| symbolInfo\.ticker/)
+  assert.match(datafeed, /client\.connect\(/)
+  assert.match(datafeed, /instrument \|\| symbolInfo\.ticker,/)
+})
+
+test('the venue is no longer offered as a second symbol authority', () => {
+  // The toolbar's exchange/product pickers were deleted in this phase; leaving
+  // the lists populated would show the library two competing answers.
+  assert.match(datafeed, /exchanges: \[\]/)
+  assert.match(datafeed, /symbols_types: \[\]/)
+})
+
+test('a symbol resolved by the library is reported back to the pane', () => {
+  assert.match(datafeed, /onSymbolResolved\?\.\(symbolInfo\)/)
+  assert.match(datafeed, /onSymbolResolved/)
+  // The new bars must not be served from the previous symbol's store: it is
+  // keyed by timeframe, so a stale banner's bars would be replayed as history.
+  const resolve = datafeed.slice(datafeed.indexOf('resolveSymbol (requestedName'))
+  assert.match(resolve, /stopStream\(\)/)
+  assert.match(resolve, /barStore\?\.clear\?\.\(\)/)
+})
+
+test('a study is created with the inputs its settings dialog will show', () => {
+  // An empty `inputs: []` made every custom study open an empty Settings
+  // dialog, and `getInputValues()` had no ids to report.
+  assert.match(component, /createStudy\(study\.name, study\.metainfo\.overlay === true, false, this\.studyInputValues\(study\)\)/)
+  assert.match(component, /study\?\.inputs/)
+  assert.match(component, /inputMap/)
+})
+
+test('a study set change edits the live chart instead of rebuilding it', () => {
+  // `custom_indicators_getter` runs once, so registered names can be added and
+  // removed in place; only names the mount did not register need a rebuild.
+  const sync = component.slice(component.indexOf('syncStudies ()'))
+  assert.match(sync.slice(0, 2400), /chart\.removeEntity\(/)
+  assert.match(sync.slice(0, 2400), /chart\.createStudy\(/)
+  assert.match(sync, /remount\(\)/)
+  assert.match(sync, /registeredStudyNames/)
+})
+
+test('editing an input in the native dialog reruns the script', () => {
+  // The dialog is the only input surface now, so the value has to travel back
+  // through `getInputValues` and a study update -- otherwise the chart keeps
+  // drawing the old parameters while the dialog shows the new ones.
+  assert.match(component, /widget\.subscribe\('study_properties_changed'/)
+  assert.match(component, /getStudyById\(entityId\)\.getInputValues\(\)/)
+  assert.match(component, /record\.descriptor\.update\?\.\(/)
+})
+
+test('the header chart type and pickers are wired back to the pane', () => {
+  // The old dropdown wrote a field nothing read. `setChartType` is the real
+  // switch, and the header's own menus must report back or the next rebuild
+  // would restore the previous interval/symbol.
+  assert.match(component, /seriesTypeFor\(this\.candleType\)/)
+  assert.match(component, /chart\.setChartType\(/)
+  assert.match(component, /chart\.onIntervalChanged/)
+  assert.match(component, /chart\.onSymbolChanged/)
+  assert.match(component, /this\.\$emit\('interval-change', \{ timeframe \}\)/)
+  assert.match(component, /\$emit\('symbol-change'/)
+})
+
+test('the IDE stores what the library reported', () => {
+  const ide = read('src/views/indicator-ide/index.vue')
+  assert.match(ide, /@symbol-change="payload => handlePaneSymbolChange\(pane\.id, payload\)"/)
+  assert.match(ide, /@interval-change="payload => handlePaneIntervalChange\(pane\.id, payload\)"/)
+  assert.match(ide, /handlePaneSymbolChange \(paneId, change\)/)
+  assert.match(ide, /handlePaneIntervalChange \(paneId, change\)/)
+})
+
+test('a context change drops every bar cache, not only the studies', () => {
+  // Both stores are keyed by timeframe. Rebuilding on a symbol change and
+  // answering from them would paint the new symbol's legend over the previous
+  // symbol's candles.
+  const watcher = component.slice(component.indexOf('dataContext ()'), component.indexOf('theme ()'))
+  assert.match(watcher, /this\.barCache\.clear\(\)/)
+  assert.match(watcher, /this\.barStore\.clear\(\)/)
+  // The study series are cached by symbol+timeframe only, so a venue change on
+  // the same pair would serve the previous venue's plots.
+  assert.match(watcher, /this\.seriesCache\.clear\(\)/)
+  assert.match(watcher, /this\.remount\(\)/)
+})
+
+test('the widget rebuild runs one at a time', () => {
+  // A search result carries symbol and venue; when both change in one tick a
+  // second `mount` would race the first for the spare host element.
+  const remount = component.slice(component.indexOf('async remount ()'))
+  assert.match(remount.slice(0, 700), /if \(this\.remounting\)/)
+  assert.match(remount, /this\.remountQueued = true/)
+  assert.match(remount, /await this\.swapChart\(\)/)
+})
+
+test('a Settings-dialog value outlives the live-bar re-evaluation', () => {
+  // The pane prop keeps the saved indicator values; a live bar re-runs the
+  // script from that prop. Without the dialog overrides being layered back in,
+  // the chart would snap back to the old inputs on the next tick.
+  const merge = component.slice(component.indexOf('withStudyParams (indicators)'), component.indexOf('/** Resolve the checked indicators'))
+  assert.match(merge, /this\.studyParams\[item\?\.name \|\| ''\]/)
+  assert.match(merge, /params: \{ \.\.\.\(item\?\.params \|\| \{\}\), \.\.\.overrides \}/)
+  const live = component.slice(component.indexOf('async refreshLiveStudies ()'), component.indexOf('captureMarketPreview'))
+  assert.match(live, /this\.withStudyParams\(this\.indicators\)/)
+})
+
+test('a failed re-evaluation keeps the old input values', () => {
+  const settings = component.slice(component.indexOf('async onStudyPropertiesChanged (entityId)'), component.indexOf('teardown ()'))
+  const evaluated = settings.indexOf('const next = indicators && indicators[0]')
+  const remembered = settings.indexOf('this.$set(this.studyParams, record.name, params)')
+  assert.ok(evaluated > -1 && remembered > evaluated, 'the override is recorded only after the script ran')
+})

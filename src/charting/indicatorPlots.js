@@ -31,6 +31,7 @@ import {
   runPineStudy,
   toPineBar
 } from './pineRuntime'
+import { parsePineInputSpecs } from './pineInputs'
 
 /**
  * Timeframe name -> the period token PineTS expects.
@@ -862,13 +863,18 @@ function colourChannel (plot) {
  * outside it (older than the request, or newer than its last candle) genuinely
  * have no output, and carrying a neighbour's value forward would invent data.
  */
-export function buildCustomIndicator ({ indicatorId, name, series, key, candleTimes, labels = [], tables = [] }) {
+export function buildCustomIndicator ({ indicatorId, name, series, key, candleTimes, labels = [], tables = [], inputSpecs = [], params = {} }) {
   const label = String(name || `Indicator ${indicatorId}`)
   const primary = series.find(plot => plot.overlay) || series[0]
   // A script that draws annotations has something to show even when every one
   // of its plots sits in the data window or none exist at all.
   const overlaysPrice = Boolean(primary && primary.overlay !== false) || (!primary && (labels.length > 0 || tables.length > 0))
   const layout = buildPlotLayout(series)
+  // The native Settings dialog renders exactly this list. Without it the dialog
+  // opens empty for every custom study, and `getInputValues()` has no ids to
+  // read back -- so the inputs are part of the study's identity, not decoration.
+  const studyInputs = buildStudyInputs(inputSpecs, params)
+  layout.defaults.inputs = studyInputs.defaults
 
   const metainfo = {
     id: `qd_indicator_${indicatorId}`,
@@ -882,7 +888,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     plots: layout.plots,
     defaults: layout.defaults,
     styles: layout.styles,
-    inputs: [],
+    inputs: studyInputs.inputs,
     ...layout.extra
   }
 
@@ -945,6 +951,16 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
     constructor: Study,
     series,
     barIndex,
+    // id (`in_<n>`) -> Pine title. A value edited in the Settings dialog comes
+    // back keyed by id, and the runtime's overrides are keyed by title.
+    inputMap: studyInputs.byId,
+    // The library's `inputs` list as handed to `createStudy`, kept so a live
+    // instance can be asked what it is showing (`getInputValues`).
+    inputs: studyInputs.inputs,
+    // The overrides this study was evaluated with, keyed by Pine title. A value
+    // edited in the Settings dialog is compared against these to decide whether
+    // anything actually changed.
+    params: { ...(params || {}) },
     // Drawings the series cannot carry. A label is pinned to a time and a
     // price; a table is placed at a corner of the pane. Neither is a plot, so
     // a study's plot table cannot express them, and the caller draws them.
@@ -1221,6 +1237,147 @@ function normaliseLocation (location) {
 }
 
 /**
+ * The library's `StudyInputType` for a Pine input spec.
+ *
+ * Pine names ten families (`input.int`, `input.timeframe`, ...) and the library
+ * names almost the same ten, but the words differ and the fallback matters:
+ * an unknown family must render as a text field rather than make the whole
+ * settings dialog fail to build.
+ */
+const STUDY_INPUT_TYPES = {
+  int: 'integer',
+  float: 'float',
+  price: 'price',
+  bool: 'bool',
+  color: 'color',
+  source: 'source',
+  symbol: 'symbol',
+  timeframe: 'resolution',
+  session: 'session',
+  time: 'time',
+  bar_time: 'bar_time',
+  str: 'text',
+  enum: 'text'
+}
+
+/**
+ * Pine's named colours, as the library's colour inputs want them.
+ *
+ * The runtime hands plot colours over as CSS already, but an input default can
+ * still be the bare constant `color.red` (or a `color.new(color.red, 20)` the
+ * script uses for its own signal). Without this table those defaults would
+ * arrive as the literal string "color.red", which the colour picker cannot
+ * parse. Values are the palette the chart itself uses, so a default signal
+ * colour reads the same in the dialog as on the chart.
+ */
+const PINE_COLOURS = {
+  red: '#F23645',
+  green: '#089981',
+  blue: '#2962FF',
+  yellow: '#FDD835',
+  orange: '#FF9800',
+  purple: '#9C27B0',
+  aqua: '#00BCD4',
+  black: '#000000',
+  white: '#FFFFFF',
+  gray: '#787B86',
+  grey: '#787B86',
+  silver: '#B2B5BE',
+  lime: '#00E676',
+  fuchsia: '#E040FB',
+  maroon: '#880E4F',
+  navy: '#311B92',
+  olive: '#808000',
+  teal: '#00897B'
+}
+
+const DEFAULT_STUDY_COLOUR = '#2962FF'
+
+/** A Pine colour expression (constant, hex, or `color.new(...)`) as CSS. */
+function studyColour (value) {
+  let text = String(value == null ? '' : value).trim()
+  if (!text) return DEFAULT_STUDY_COLOUR
+  // `color.new(colour, transparency)` wraps the colour it derives from; the
+  // transparency it adds is already baked into the plot data, so only the inner
+  // colour is needed here.
+  while (text.startsWith('color.new(') && text.endsWith(')')) {
+    text = text.slice('color.new('.length, -1).split(',')[0].trim()
+  }
+  const named = /^color\.([a-z_]+)$/i.exec(text)
+  if (named) return PINE_COLOURS[named[1].toLowerCase()] || DEFAULT_STUDY_COLOUR
+  const hex = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(text)
+  if (hex) return `#${hex[1].slice(0, 6).toUpperCase()}`
+  return DEFAULT_STUDY_COLOUR
+}
+
+function studyNumber (value, fallback = 0) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+/**
+ * Turn Pine input specs into the library's `inputs` meta list.
+ *
+ * The list is what the native Settings dialog renders, and its ids are what
+ * `getInputValues()` returns, so the id here is the same `in_<n>` the runtime
+ * assigns -- that is the one stable handle both sides agree on when a saved
+ * override has to address a declaration the user has since retitled.
+ *
+ * `params` are the current values (a saved indicator's defaults, or what the
+ * user last picked); anything missing falls back to the script's own default so
+ * the dialog opens showing what the chart is actually drawing.
+ */
+export function buildStudyInputs (specs, params) {
+  const values = params || {}
+  const inputs = []
+  const defaults = {}
+  // id -> the Pine title that keys `params`, so a value edited in the native
+  // dialog can be turned back into the override the runtime understands.
+  const byId = {}
+  for (const spec of Array.isArray(specs) ? specs : []) {
+    if (!spec || !spec.name || !spec.pineInputId) continue
+    const type = STUDY_INPUT_TYPES[spec.type] || 'text'
+    const raw = Object.prototype.hasOwnProperty.call(values, spec.name) ? values[spec.name] : spec.defaultValue
+    const id = spec.pineInputId
+    const info = { id, name: String(spec.name), type }
+    if (spec.group) info.group = String(spec.group)
+    if (spec.description) info.tooltip = String(spec.description)
+    switch (type) {
+      case 'integer':
+      case 'float':
+      case 'price':
+        info.defval = studyNumber(raw)
+        break
+      case 'bool':
+        info.defval = Boolean(raw)
+        break
+      case 'color':
+        info.defval = studyColour(raw)
+        break
+      case 'time':
+      case 'bar_time':
+        info.defval = studyNumber(raw)
+        break
+      case 'text':
+        info.defval = raw == null ? '' : String(raw)
+        if (Array.isArray(spec.values) && spec.values.length) info.options = spec.values.map(value => String(value))
+        break
+      default:
+        info.defval = raw == null ? '' : String(raw)
+    }
+    if (['integer', 'float', 'price'].includes(type)) {
+      if (Number.isFinite(Number(spec.min))) info.min = Number(spec.min)
+      if (Number.isFinite(Number(spec.max))) info.max = Number(spec.max)
+      if (Number.isFinite(Number(spec.step)) && Number(spec.step) > 0) info.step = Number(spec.step)
+    }
+    inputs.push(info)
+    defaults[id] = info.defval
+    byId[id] = String(spec.name)
+  }
+  return { inputs, defaults, byId }
+}
+
+/**
  * Resolve a set of custom indicators for a chart, loading what is missing.
  *
  * Called from `custom_indicators_getter`, which must return a promise; the
@@ -1274,6 +1431,10 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
     if (!indicatorId && !inlineCode.trim()) return null
     const revision = inlineCode.trim() ? draftRevision(inlineCode) : ''
     const paramsKey = paramsFingerprint(indicator.params)
+    // The native Settings dialog is built from these, so they are parsed once
+    // per study here rather than per bar. A script whose source is not in hand
+    // simply gets no dialog inputs -- there is nothing honest to render.
+    const inputSpecs = inlineCode.trim() ? parsePineInputSpecs(inlineCode) : []
     const key = seriesKey({ indicatorId, market, symbol, timeframe, revision, params: paramsKey })
     let loaded = cache.get(key)
     // Tolerate a bare plot array so a cache seeded elsewhere still works; it
@@ -1319,6 +1480,8 @@ export async function resolveCustomIndicators ({ indicators, market, symbol, tim
         candleTimes: loaded?.candleTimes,
         labels,
         tables,
+        inputSpecs,
+        params: indicator.params || {},
         key
       })
     }

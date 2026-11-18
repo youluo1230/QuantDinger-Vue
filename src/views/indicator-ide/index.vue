@@ -658,6 +658,8 @@
                           :quick-trade-positions="pane.id === activeChartPaneId ? quickTradeChartPositions : []"
                           @indicator-error="handleTvIndicatorError"
                           @price-change="payload => handlePanePriceChange(pane.id, payload)"
+                          @symbol-change="payload => handlePaneSymbolChange(pane.id, payload)"
+                          @interval-change="payload => handlePaneIntervalChange(pane.id, payload)"
                         />
                       </div>
                     </div>
@@ -2003,6 +2005,69 @@ export default {
     },
     handlePanePriceChange (paneId, payload) {
       if (paneId === this.activeChartPaneId) this.handleChartPriceChange(payload)
+    },
+    /**
+     * A symbol picked in the library's own search dialog.
+     *
+     * The library owns the search now, so the pane has to follow the symbol it
+     * resolved -- including the venue the encoded ticker carried, or the next
+     * rebuild would put the chart back on the old venue and re-subscribe to its
+     * stream. The pane-level state is written through the page-level fields for
+     * the active pane because that is what the existing watchers already sync;
+     * an inactive pane is updated in place.
+     */
+    handlePaneSymbolChange (paneId, change) {
+      const pane = this.chartPanes.find(item => item.id === paneId)
+      if (!pane || !change) return
+      const symbol = String(change.symbol || change.instrumentId || '').trim()
+      if (!symbol) return
+      const market = String(change.market || pane.market || 'Crypto')
+      const exchangeId = String(change.exchangeId || '')
+      const marketType = market === 'Crypto' ? (String(change.marketType || '') || pane.marketType || 'spot') : 'spot'
+      const instrumentId = String(change.instrumentId || '')
+      const same = pane.symbol === symbol &&
+        pane.market === market &&
+        (market !== 'Crypto' || (
+          String(pane.exchangeId || '') === exchangeId &&
+          String(pane.marketType || 'spot') === marketType &&
+          String(pane.instrumentId || '') === instrumentId
+        ))
+      if (same) return
+      if (paneId === this.activeChartPaneId) {
+        this.market = market
+        this.symbol = symbol
+        this.currentInstrumentId = instrumentId
+        this.cryptoExchangeId = exchangeId || this.cryptoExchangeId
+        this.cryptoMarketType = marketType
+        this.currentProductType = market === 'Crypto' ? (this.currentProductType || 'crypto') : ''
+        this.currentApiFamily = market === 'Crypto' ? (this.currentApiFamily || 'spot') : ''
+      } else {
+        const index = this.chartPanes.findIndex(item => item.id === paneId)
+        if (index >= 0) {
+          this.$set(this.chartPanes, index, { ...pane, symbol, market, exchangeId, marketType, instrumentId, assetId: 0 })
+        }
+      }
+      this.schedulePersistIdeUiState()
+    },
+    /**
+     * A period picked in the library's own interval menu.
+     *
+     * Only the library's own vocabulary comes back, so it is translated to the
+     * pane's timeframe name first; the pane state is what a rebuild restores
+     * from, and a remount onto the old period would undo the user's click.
+     */
+    handlePaneIntervalChange (paneId, change) {
+      const pane = this.chartPanes.find(item => item.id === paneId)
+      if (!pane || !change) return
+      const timeframe = String(change.timeframe || '').trim()
+      if (!timeframe || timeframe === pane.timeframe) return
+      if (paneId === this.activeChartPaneId) {
+        this.timeframe = timeframe
+      } else {
+        const index = this.chartPanes.findIndex(item => item.id === paneId)
+        if (index >= 0) this.$set(this.chartPanes, index, { ...pane, timeframe })
+      }
+      this.schedulePersistIdeUiState()
     },
     restoreChartTypePreference () {
       const saved = storage.get(chartTypeStorageKey(this.userId))

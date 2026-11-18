@@ -8,6 +8,7 @@
 
 import request from '@/utils/request'
 import ExchangeKlineWs, { getExchangeInterval } from '@/utils/exchangeWs'
+import { decodeSymbolTicker, encodeSymbolTicker } from './symbolTicker'
 
 /**
  * Library resolution -> the timeframe name the backend accepts.
@@ -81,14 +82,24 @@ const MARKET_PROFILES = {
   Futures: { type: 'futures', session: '24x7', timezone: 'America/Chicago', pricescale: 10000 }
 }
 
-export function buildSymbolInfo ({ symbol, market, exchangeId, marketType, instrumentId, timeframe }) {
-  const ticker = String(symbol || '').trim()
+export function buildSymbolInfo ({ symbol, market, exchangeId, marketType, instrumentId, timeframe, ticker, instrument }) {
   const marketLabel = String(market || 'Crypto').trim()
+  // The human symbol is what the backend's `/api/market-data/candles` wants and
+  // what the legend shows; the ticker is the venue-scoped identity the library
+  // echoes back. They differ as soon as a search result carries a venue.
+  const human = String(instrument || symbol || '').trim()
+  const encoded = String(ticker || '').trim() || encodeSymbolTicker({
+    market: marketLabel,
+    marketType,
+    exchangeId,
+    instrumentId: instrumentId || human,
+    symbol: human
+  }) || human
   const profile = MARKET_PROFILES[marketLabel] || MARKET_PROFILES.Crypto
   return {
-    name: ticker,
-    ticker: ticker,
-    description: exchangeId ? `${ticker} · ${exchangeId}` : ticker,
+    name: human || encoded,
+    ticker: encoded,
+    description: exchangeId ? `${human || encoded} · ${exchangeId}` : (human || encoded),
     type: profile.type,
     session: profile.session,
     timezone: profile.timezone,
@@ -114,6 +125,9 @@ export function buildSymbolInfo ({ symbol, market, exchangeId, marketType, instr
     exchangeId: exchangeId || '',
     marketType: marketType || '',
     instrumentId: instrumentId || '',
+    // The human symbol, kept separate from `ticker` because the bar and socket
+    // endpoints address an instrument by this value, never by the encoded one.
+    instrument: human || encoded,
     timeframe: timeframe || ''
   }
 }
@@ -256,7 +270,7 @@ export function createBarStore ({ limit = 20000 } = {}) {
  * fixed order, so state that belongs to the chart lives in this closure rather
  * than in module scope where two charts would collide.
  */
-export function createDatafeed ({ market, symbol, exchangeId, marketType, instrumentId, timeframe, onRealtimeBar, barStore = null }) {
+export function createDatafeed ({ market, symbol, exchangeId, marketType, instrumentId, timeframe, onRealtimeBar, onSymbolResolved, barStore = null }) {
   let symbolInfo = buildSymbolInfo({ symbol, market, exchangeId, marketType, instrumentId, timeframe })
   const listeners = new Map()
   let stopped = false
@@ -291,7 +305,7 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     stream = client
     streamResolution = resolution
     const started = client.connect(
-      symbolInfo.ticker,
+      symbolInfo.instrument || symbolInfo.ticker,
       timeframe,
       {
         onTick: (tick) => {
@@ -326,7 +340,9 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
 
   const requestParams = (extra) => ({
     market: symbolInfo.market,
-    symbol: symbolInfo.ticker,
+    // `/api/market-data/candles` resolves an instrument from the human symbol
+    // plus the venue fields; the encoded ticker means nothing to it.
+    symbol: symbolInfo.instrument || symbolInfo.ticker,
     exchange_id: symbolInfo.exchangeId || undefined,
     market_type: symbolInfo.marketType || undefined,
     instrument_id: symbolInfo.instrumentId || undefined,
@@ -352,23 +368,111 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
         // eslint-disable-next-line node/no-callback-literal
         callback({
           supported_resolutions: ['1', '3', '5', '15', '30', '60', '240', '1D', '1W'],
-          exchanges: [
-            { value: symbolInfo.market, name: symbolInfo.market, desc: symbolInfo.market }
-          ],
-          symbols_types: [{ name: 'All', value: 'all' }],
+          // The header's exchange and instrument-type pickers are not a second
+          // symbol authority: every symbol comes from `searchSymbols`, which
+          // already knows each result's venue. Advertising the current market
+          // here would make the library filter search results by it.
+          exchanges: [],
+          symbols_types: [],
           currency_codes: ['USD', 'USDT', 'USDC']
         })
       }, 0)
     },
 
+    /**
+     * Resolve the ticker the library is asking for.
+     *
+     * The library echoes back exactly what `searchSymbols` (or the widget
+     * options) handed it, so an encoded ticker carries its venue with it. A
+     * bare symbol keeps the venue this pane already holds -- that is what the
+     * IDE passes in before the user has searched for anything.
+     */
     resolveSymbol (requestedName, onResolve, onError) {
       try {
-        if (requestedName) {
-          symbolInfo = { ...symbolInfo, name: requestedName, ticker: requestedName }
+        const requested = String(requestedName || '').trim()
+        if (requested && requested !== symbolInfo.ticker) {
+          const decoded = decodeSymbolTicker(requested)
+          // A new symbol is a new series: bars belonging to the previous one
+          // must not answer for it, and the socket is subscribed to a pair the
+          // chart is no longer showing.
+          stopStream()
+          earliestSeenMs = null
+          barStore?.clear?.()
+          symbolInfo = decoded
+            ? buildSymbolInfo({
+              symbol: decoded.instrumentId,
+              market: decoded.market || symbolInfo.market,
+              exchangeId: decoded.exchangeId,
+              marketType: decoded.marketType,
+              instrumentId: decoded.instrumentId,
+              timeframe: symbolInfo.timeframe,
+              ticker: requested
+            })
+            : buildSymbolInfo({
+              symbol: requested,
+              market: symbolInfo.market,
+              exchangeId: symbolInfo.exchangeId,
+              marketType: symbolInfo.marketType,
+              timeframe: symbolInfo.timeframe,
+              ticker: requested
+            })
+          onSymbolResolved?.(symbolInfo)
         }
         onResolve(symbolInfo)
       } catch (err) {
         onError?.(err)
+      }
+    },
+
+    /**
+     * Search the backend's instrument catalogue.
+     *
+     * This is the only symbol entry point: the pane's market scopes the search,
+     * while the venue stays part of each result so picking a perpetual pair does
+     * not silently keep the spot subscription the pane was on.
+     */
+    async searchSymbols (userInput, exchange, symbolType, onResult, onError) {
+      const keyword = String(userInput == null ? '' : userInput).trim()
+      if (!keyword) {
+        onResult([])
+        return
+      }
+      try {
+        const response = await request({
+          url: '/api/market/symbols/search',
+          method: 'get',
+          params: {
+            market: symbolInfo.market,
+            keyword,
+            limit: 30
+          },
+          timeout: 20000
+        })
+        const rows = response?.code === 1 && Array.isArray(response.data) ? response.data : []
+        const profile = MARKET_PROFILES[symbolInfo.market] || MARKET_PROFILES.Crypto
+        const results = []
+        for (const row of rows) {
+          const market = String(row?.market || symbolInfo.market || '').trim()
+          const instrument = String(row?.symbol || row?.instrument_id || '').trim()
+          const ticker = encodeSymbolTicker({
+            market,
+            marketType: row?.market_type,
+            exchangeId: row?.exchange_id,
+            instrumentId: row?.instrument_id || instrument,
+            symbol: instrument
+          })
+          if (!ticker || !instrument) continue
+          results.push({
+            symbol: ticker,
+            full_name: String(row?.name || instrument),
+            description: [instrument, row?.exchange_id, row?.market_type].filter(Boolean).join(' · '),
+            exchange: String(row?.exchange_id || market || ''),
+            type: (MARKET_PROFILES[market] || profile).type
+          })
+        }
+        onResult(results)
+      } catch (err) {
+        onError?.(err?.message || String(err))
       }
     },
 

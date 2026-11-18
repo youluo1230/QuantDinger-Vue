@@ -28,7 +28,9 @@
 </template>
 
 <script>
-import { createBarStore, intervalFor, mountTradingViewChart } from '@/charting/tradingview'
+import { createBarStore, intervalFor, mountTradingViewChart, seriesTypeFor } from '@/charting/tradingview'
+import { timeframeFromResolution } from '@/charting/datafeed'
+import { encodeSymbolTicker } from '@/charting/symbolTicker'
 import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
 
 /**
@@ -148,12 +150,35 @@ export default {
       // What the library created, in creation order, so a live bar can update
       // those studies in place instead of rebuilding the widget.
       liveStudies: [],
+      // The study instances the library actually created, keyed by the entity
+      // id it handed back. This is the only handle that lets a value edited in
+      // the native Settings dialog be read back (`getInputValues`) and turned
+      // into a new evaluation without recreating the widget.
+      studyRecords: [],
+      // Input values edited in the native Settings dialog, keyed by study name.
+      // The list the parent passes still holds the saved indicator's values, so
+      // without this every live bar would re-run the script with the old inputs
+      // and undo the edit. Cleared with the component; persisting it is the
+      // workspace-archive work.
+      studyParams: {},
+      // Study names the mounted widget's `custom_indicators_getter` registered.
+      // `createStudy` resolves to null for a name that was not there at mount,
+      // so this decides whether a set change can be applied in place or needs
+      // the rebuild fallback.
+      registeredStudyNames: [],
+      // Teardown callbacks for the chart subscriptions (interval, symbol).
+      chartUnsubscribes: [],
       // Labels this component drew on the chart, kept so a redraw can remove the
       // previous set instead of stacking a second copy on top of it.
       drawnLabels: [],
       // Tables a study filled. The library's drawing API has no table primitive,
       // so they are rendered as positioned DOM over the chart.
       indicatorTables: [],
+      // A rebuild asked for while one is already in flight must not start a
+      // second widget: two consecutive `mount` calls would race for the spare
+      // host. The request is remembered and applied after the first finishes.
+      remounting: false,
+      remountQueued: false,
       // The most recent socket bar, waiting for the next resolve slot.
       liveBar: null,
       liveResolveTimer: null,
@@ -169,27 +194,53 @@ export default {
       }
     }
   },
+  computed: {
+    /**
+     * Everything that decides which data this widget must show.
+     *
+     * One watcher rather than four: a symbol picked in the library's search
+     * arrives as instrument *and* venue, and a venue change alone is enough to
+     * point the same pair at a different market. Watching the parts separately
+     * fired one rebuild per changed field -- and two rebuilds in one tick race
+     * for the spare host.
+     */
+    dataContext () {
+      return [
+        this.symbol,
+        this.market,
+        this.exchangeId,
+        this.marketType,
+        this.instrumentId,
+        this.timeframe
+      ].join('|')
+    }
+  },
   watch: {
-    symbol () {
+    dataContext () {
       // The library has no public "change symbol" call that keeps its own
-      // state coherent, so the mounted widget is replaced wholesale.
+      // state coherent, so the mounted widget is replaced wholesale. Every
+      // store is dropped, because none of them is keyed by venue: a swap from
+      // spot to perpetual on the same pair would otherwise replay the previous
+      // subscription's bars and plot the previous venue's prices under the new
+      // legend, which reads as a data bug rather than a cache hit.
       this.barCache.clear()
-      this.remount()
-    },
-    timeframe () {
-      // A different period is a different series; keeping the old bars only
-      // costs memory, since the cache key already keeps them apart.
-      this.barCache.clear()
+      this.barStore.clear()
+      this.seriesCache.clear()
       this.remount()
     },
     theme () {
       this.remount()
     },
+    candleType () {
+      // The style is a property of the chart, not of the data: switching it
+      // must not rebuild the widget or re-run a single script.
+      this.applyChartType()
+    },
     indicators: {
-      // A changed set is rebuilt rather than patched: the getter is consulted
-      // once at mount, so a study that was not registered then cannot be drawn
-      // later. The rebuild restores the visible range so it does not read as a
-      // reload -- see `reconcileStudies`.
+      // A changed set is applied in place when the names were all registered at
+      // mount, and rebuilt only when one was not: the getter is consulted once
+      // at mount, so a study it never saw cannot be created later. Both paths
+      // preserve the visible range so the change does not read as a reload.
       //
       // The signature is what decides, not object identity. The parent hands
       // this prop over as the result of a method call, so every re-render of the
@@ -201,7 +252,7 @@ export default {
         const signature = this.indicatorsSignature(next)
         if (signature === this.lastIndicatorsSignature) return
         this.lastIndicatorsSignature = signature
-        this.reconcileStudies()
+        this.syncStudies()
       }
     },
     quickTradePositions: {
@@ -272,6 +323,11 @@ export default {
           locale: this.locale,
           customIndicators: () => this.loadIndicators(),
           barStore: this.barStore,
+          // The datafeed sees a symbol change before the chart does, and its
+          // symbolInfo carries the venue the encoded ticker decoded to. It is
+          // the only callback that knows a search result's venue; the chart
+          // subscription below reports the same change one frame later.
+          onSymbolResolved: (info) => this.onLibrarySymbolResolved(info),
           // The quick-trade panel prefills its price from the chart's last
           // trade. The bundled canvas emitted this; without it the panel would
           // keep whatever price it last saw, which is worse than a stale label
@@ -313,6 +369,8 @@ export default {
         this.handle.widget.onChartReady?.(() => {
           this.drawStudies()
           this.drawPositionLines()
+          this.applyChartType()
+          this.subscribeChartEvents()
           finish()
         })
         // A widget that never reports ready must not hang a rebuild forever; the
@@ -390,39 +448,326 @@ export default {
      * study registry, and `createStudy` is what puts one on the chart. Both
      * steps are needed and only the first was happening.
      */
-    async drawStudies () {
-      if (!this.indicators.length) return
-      const { indicators, failures } = await resolveCustomIndicators({
-        indicators: this.indicators,
+    /**
+     * Layer the Settings-dialog values over the indicators the pane handed in.
+     *
+     * Precedence is per input title: a value the user picked wins over the
+     * saved one, everything else keeps following the editor. The name is the
+     * key because it is what the library uses to address a study.
+     */
+    withStudyParams (indicators) {
+      const list = Array.isArray(indicators) ? indicators : []
+      return list.map(item => {
+        const overrides = this.studyParams[item?.name || '']
+        if (!overrides) return item
+        return { ...item, params: { ...(item?.params || {}), ...overrides } }
+      })
+    },
+    /** Resolve the checked indicators against the current series. */
+    resolveStudies (indicators = this.indicators) {
+      return resolveCustomIndicators({
+        indicators: this.withStudyParams(indicators),
         market: this.market,
         symbol: this.symbol,
         timeframe: this.timeframe,
+        exchangeId: this.exchangeId,
+        marketType: this.marketType,
+        instrumentId: this.instrumentId,
         cache: this.seriesCache,
         barCache: this.barCache
       })
+    },
+    /**
+     * The values a study's inputs start from, as `createStudy` wants them.
+     *
+     * The library keys inputs by id (`in_<n>`) and values by type; both come
+     * from the same spec list the native Settings dialog renders, so the first
+     * picture and the dialog cannot disagree.
+     */
+    studyInputValues (study) {
+      const values = {}
+      for (const input of Array.isArray(study?.inputs) ? study.inputs : []) {
+        if (input && input.id) values[input.id] = input.defval
+      }
+      return values
+    },
+    async drawStudies () {
+      this.studyRecords = []
+      this.liveStudies = []
+      if (!this.indicators.length) {
+        this.registeredStudyNames = []
+        return
+      }
+      const { indicators, failures } = await this.resolveStudies()
       this.reportFailures(failures)
+      // The names the getter just registered: a later set change can use these
+      // in place, and only a name outside this list forces a rebuild.
+      this.registeredStudyNames = indicators.map(study => study.name)
       const chart = this.handle?.widget?.activeChart?.()
       if (!chart) return
-      // Collected in creation order so a live bar can update these studies
-      // instead of rebuilding the widget: the position in this array is the
-      // only handle the library gives back that lines a study up with the
-      // resolved output.
-      const created = []
+      const records = []
       for (const study of indicators) {
         try {
           // Overlay placement comes from the study's own metainfo; forcing the
           // overlay flag here would fight the indicator author's intent.
           // eslint-disable-next-line no-await-in-loop
-          await chart.createStudy(study.name, study.metainfo.overlay === true, false, {})
-          created.push(study)
+          const entityId = await chart.createStudy(study.name, study.metainfo.overlay === true, false, this.studyInputValues(study))
+          if (entityId) {
+            records.push({
+              entityId,
+              name: study.name,
+              key: study.key,
+              descriptor: study,
+              params: { ...(study.params || {}) }
+            })
+          }
         } catch (err) {
           if (process.env.NODE_ENV !== 'production') {
             console.debug('createStudy failed', study.name, err)
           }
         }
       }
-      this.liveStudies = created
-      this.drawStudyDrawings(created)
+      this.studyRecords = records
+      this.liveStudies = records.map(record => record.descriptor)
+      this.drawStudyDrawings(this.liveStudies)
+    },
+    /**
+     * Bring the drawn studies in line with the checked set without a rebuild.
+     *
+     * The library can add and remove studies on a live chart (`createStudy`,
+     * `removeEntity`), and for a set change that is all that is needed: the
+     * scripts are already registered, the bars are cached, and no widget state
+     * depends on the study list. A rebuild is reserved for the one case the
+     * library really cannot do -- showing a script whose name it was never told
+     * about at mount, because the getter is read once.
+     */
+    async syncStudies () {
+      if (!this.handle) return
+      const { indicators, failures } = await this.resolveStudies()
+      this.reportFailures(failures)
+      // Two indicators can share a display name, and the library addresses a
+      // study by that name. Rather than guess which duplicate a set change
+      // meant, a duplicate name is treated as "not safely patchable".
+      const names = indicators.map(study => study.name)
+      const unique = new Set(names).size === names.length
+      const known = unique && indicators.every(study => this.registeredStudyNames.includes(study.name))
+      if (!known) {
+        const viewport = this.captureViewport()
+        await this.remount()
+        this.restoreViewport(viewport)
+        return
+      }
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart) return
+      const wanted = new Set(names)
+      for (const record of [...this.studyRecords]) {
+        if (wanted.has(record.name)) continue
+        try {
+          chart.removeEntity(record.entityId)
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('removeEntity failed', record.name, err)
+          }
+        }
+        this.studyRecords = this.studyRecords.filter(item => item !== record)
+      }
+      for (const study of indicators) {
+        const existing = this.studyRecords.find(record => record.name === study.name)
+        if (existing) {
+          // The library's own `Study` instance reads the lookup built by the
+          // descriptor it was created from, so the update has to run on that
+          // descriptor -- swapping in a fresh one would leave the chart drawing
+          // whatever the old closure last computed. A set change cannot change
+          // the plot table either, so refreshing the values is enough.
+          existing.descriptor.update?.({
+            plots: study.series,
+            candleTimes: study.candleTimes,
+            labels: study.labels,
+            tables: study.tables
+          })
+          existing.key = study.key
+          existing.params = { ...(study.params || {}) }
+          continue
+        }
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const entityId = await chart.createStudy(study.name, study.metainfo.overlay === true, false, this.studyInputValues(study))
+          if (entityId) {
+            this.studyRecords.push({
+              entityId,
+              name: study.name,
+              key: study.key,
+              descriptor: study,
+              params: { ...(study.params || {}) }
+            })
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('createStudy failed', study.name, err)
+          }
+        }
+      }
+      this.liveStudies = this.studyRecords.map(record => record.descriptor)
+      this.drawStudyDrawings(this.liveStudies)
+    },
+    /**
+     * The chart's style, from the IDE's chart-type name.
+     *
+     * `setChartType` is a property change, not a data change: no bars move and
+     * no study re-runs, which is why the toolbar can offer it without the
+     * flicker a rebuild would cost.
+     */
+    applyChartType () {
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.setChartType !== 'function') return
+      try {
+        chart.setChartType(seriesTypeFor(this.candleType))
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('setChartType failed', err)
+        }
+      }
+    },
+    /**
+     * Listen for the controls the library now owns.
+     *
+     * The chart's own header can change the interval and the symbol; the IDE's
+     * pane state has to follow, or the next rebuild would put the chart back on
+     * the symbol the pane still believes in.
+     */
+    subscribeChartEvents () {
+      const widget = this.handle?.widget
+      const chart = widget?.activeChart?.()
+      if (!widget || !chart) return
+      try {
+        if (typeof widget.subscribe === 'function') {
+          widget.subscribe('study_properties_changed', this.onStudyPropertiesChanged)
+        }
+        const offInterval = chart.onIntervalChanged?.()
+        offInterval?.subscribe?.(null, (interval) => this.onLibraryIntervalChanged(interval))
+        const offSymbol = chart.onSymbolChanged?.()
+        offSymbol?.subscribe?.(null, (info) => this.onLibrarySymbolResolved(info))
+        // The subscriptions outlive the callbacks' usefulness the moment the
+        // widget is destroyed; unsubscribing explicitly is what keeps a rebuilt
+        // chart from calling into a dead component.
+        this.chartUnsubscribes.push(() => {
+          try {
+            widget.unsubscribe?.('study_properties_changed', this.onStudyPropertiesChanged)
+            offInterval?.unsubscribe?.(null)
+            offSymbol?.unsubscribe?.(null)
+          } catch (err) {
+            if (process.env.NODE_ENV !== 'production') {
+              console.debug('chart unsubscribe failed', err)
+            }
+          }
+        })
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('chart subscription failed', err)
+        }
+      }
+    },
+    /** The header's interval picker, as the pane's timeframe. */
+    onLibraryIntervalChanged (interval) {
+      const timeframe = timeframeFromResolution(interval)
+      if (!timeframe || timeframe === this.timeframe) return
+      this.$emit('interval-change', { timeframe })
+    },
+    /**
+     * A symbol the library resolved, reported back to the pane.
+     *
+     * The library prints a bare title for a bare symbol, and the pane already
+     * knows which venue it holds; only a symbol that carries a venue (the
+     * encoded ticker a search result returns) has something new to say.
+     */
+    onLibrarySymbolResolved (info) {
+      const ticker = String(info?.ticker || '').trim()
+      if (!ticker) return
+      const current = encodeSymbolTicker({
+        market: this.market,
+        marketType: this.marketType,
+        exchangeId: this.exchangeId,
+        instrumentId: this.instrumentId,
+        symbol: this.symbol
+      })
+      if (ticker === current) return
+      this.$emit('symbol-change', {
+        ticker,
+        market: String(info.market || this.market),
+        marketType: String(info.marketType || ''),
+        exchangeId: String(info.exchangeId || ''),
+        instrumentId: String(info.instrumentId || ''),
+        symbol: String(info.instrument || info.name || '')
+      })
+    },
+    /**
+     * A value edited in the native Settings dialog.
+     *
+     * The dialog owns the values; this side owns the evaluation. Reading them
+     * back through `getInputValues` and re-running the script is what keeps the
+     * two in sync -- and the ids are the same `in_<n>` handles the metainfo
+     * advertised, so the mapping back to a Pine title is exact.
+     */
+    async onStudyPropertiesChanged (entityId) {
+      const record = this.studyRecords.find(item => item.entityId === entityId)
+      if (!record) return
+      const chart = this.handle?.widget?.activeChart?.()
+      if (!chart || typeof chart.getStudyById !== 'function') return
+      let values = []
+      try {
+        values = chart.getStudyById(entityId).getInputValues() || []
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('getInputValues failed', err)
+        }
+        return
+      }
+      const inputMap = record.descriptor?.inputMap || {}
+      const params = {}
+      let changed = false
+      for (const item of values) {
+        const title = inputMap[item?.id]
+        if (!title) continue
+        params[title] = item.value
+        // The dialog hands back numbers and the script's overrides arrive as
+        // strings, so a strict compare would call every open a change and rerun
+        // the script for nothing.
+        if (String(record.params?.[title] ?? '') !== String(item.value ?? '')) changed = true
+      }
+      if (!changed) return
+      const source = (this.indicators || []).find(item => (item?.name || '') === record.name)
+      if (!source) return
+      try {
+        const { indicators } = await resolveCustomIndicators({
+          indicators: [{ ...source, params: { ...(source.params || {}), ...params } }],
+          market: this.market,
+          symbol: this.symbol,
+          timeframe: this.timeframe,
+          exchangeId: this.exchangeId,
+          marketType: this.marketType,
+          instrumentId: this.instrumentId,
+          cache: this.seriesCache,
+          barCache: this.barCache
+        })
+        const next = indicators && indicators[0]
+        if (!next) return
+        // Only after the re-evaluation succeeded: a failed run must leave both
+        // the record and the chart on the values they were showing.
+        this.$set(this.studyParams, record.name, params)
+        record.params = params
+        // Deliberately the same descriptor: the library holds the `Study`
+        // instance that descriptor built, and only that closure can refresh
+        // what the chart is drawing.
+        record.descriptor.update?.({ plots: next.series, candleTimes: next.candleTimes, labels: next.labels, tables: next.tables })
+        record.key = next.key
+        this.liveStudies = this.studyRecords.map(item => item.descriptor)
+        this.drawStudyDrawings(this.liveStudies)
+        this.handle?.widget?.activeChart?.()?.refreshMarks?.()
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('study input re-evaluation failed', record.name, err)
+        }
+      }
     },
     /**
      * Draw what the study's plot table cannot carry.
@@ -540,10 +885,13 @@ export default {
     async loadIndicators () {
       if (!this.indicators.length) return []
       const { indicators, failures } = await resolveCustomIndicators({
-        indicators: this.indicators,
+        indicators: this.withStudyParams(this.indicators),
         market: this.market,
         symbol: this.symbol,
         timeframe: this.timeframe,
+        exchangeId: this.exchangeId,
+        marketType: this.marketType,
+        instrumentId: this.instrumentId,
         cache: this.seriesCache,
         barCache: this.barCache
       })
@@ -568,7 +916,7 @@ export default {
       const signature = this.indicatorsSignature(this.indicators)
       if (this.handle && signature === this.lastIndicatorsSignature) return
       this.lastIndicatorsSignature = signature
-      await this.reconcileStudies()
+      await this.syncStudies()
     },
     /**
      * Advance the studies onto the bar the socket just delivered.
@@ -619,10 +967,13 @@ export default {
       this.seriesCache.clear()
       try {
         const { indicators } = await resolveCustomIndicators({
-          indicators: this.indicators,
+          indicators: this.withStudyParams(this.indicators),
           market: this.market,
           symbol: this.symbol,
           timeframe: this.timeframe,
+          exchangeId: this.exchangeId,
+          marketType: this.marketType,
+          instrumentId: this.instrumentId,
           cache: this.seriesCache,
           barCache: this.barCache
         })
@@ -736,16 +1087,25 @@ export default {
     },
     teardown () {
       if (!this.handle) return
+      for (const off of this.chartUnsubscribes) {
+        try {
+          off()
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('chart teardown failed', err)
+          }
+        }
+      }
+      this.chartUnsubscribes = []
+      this.studyRecords = []
+      this.liveStudies = []
+      this.studyParams = {}
+      this.registeredStudyNames = []
       this.positionLines = []
       // Tables are DOM, labels are chart shapes; both belong to the widget that
       // is about to go.
       this.indicatorTables = []
       this.drawnLabels = []
-      // Vue observes this array deeply, so every study object and every number
-      // in its series carries a getter/setter. The instances die with the
-      // widget, so holding them keeps a whole study-set's worth of reactive
-      // numbers alive for nothing -- measured at ~250KB per study.
-      this.liveStudies = []
       try {
         this.handle.destroy()
       } finally {
@@ -762,6 +1122,24 @@ export default {
      * until the new one can cover it.
      */
     async remount () {
+      if (this.remounting) {
+        // Coalesce: by the time the in-flight rebuild finishes, the props hold
+        // the latest values, so one more pass is all a burst of changes needs.
+        this.remountQueued = true
+        return
+      }
+      this.remounting = true
+      try {
+        await this.swapChart()
+      } finally {
+        this.remounting = false
+        if (this.remountQueued) {
+          this.remountQueued = false
+          this.remount()
+        }
+      }
+    },
+    async swapChart () {
       const previous = this.handle
       const previousSlot = this.hostSlot
       const nextSlot = previousSlot === 0 ? 1 : 0

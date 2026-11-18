@@ -57,6 +57,12 @@ const stubbed = source
       '}'
     ].join('\n')
   )
+  // Input specs are read from the script's own text; the tests that care about
+  // them install their own parser, and the ones that do not get an empty list.
+  .replace(
+    /^import \{ parsePineInputSpecs \} from '\.\/pineInputs'$/m,
+    'const parsePineInputSpecs = (...args) => (globalThis.__qdPineInputs || (() => []))(...args)'
+  )
 const modulePath = join(tmpdir(), `qd_indicatorPlots_${process.pid}.mjs`)
 writeFileSync(modulePath, stubbed)
 const plots = await import(pathToFileURL(modulePath).href)
@@ -1118,5 +1124,118 @@ describe('a study that reads a period this deployment cannot serve', () => {
     // monthly read is called serviceable and the provider refuses it.
     assert.match(source, /const SERVICEABLE_TIMEFRAMES = new Set\(\['1m', '3m', '5m', '15m', '30m', '1H', '4H', '1D', '1W'\]\)/)
     assert.doesNotMatch(source, /isServableTimeframe[\s\S]{0,200}toUpperCase/)
+  })
+})
+
+describe('the inputs the native settings dialog renders', () => {
+  const times = candleTimesMs(2)
+  const series = [{ kind: 'line', name: 'EMA', values: [1, 2], overlay: true }]
+
+  it('maps every Pine input family onto a library input type', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 20,
+      name: 'Inputs',
+      key: 'k',
+      series,
+      candleTimes: times,
+      inputSpecs: [
+        { name: 'Length', pineInputId: 'in_0', type: 'int', defaultValue: 14, min: 2, max: 500, step: 1 },
+        { name: 'Smooth', pineInputId: 'in_1', type: 'float', defaultValue: 0.5 },
+        { name: 'Show', pineInputId: 'in_2', type: 'bool', defaultValue: true },
+        { name: 'Tint', pineInputId: 'in_3', type: 'color', defaultValue: '#ff0000' },
+        { name: 'Period', pineInputId: 'in_4', type: 'timeframe', defaultValue: '60' },
+        { name: 'Mode', pineInputId: 'in_5', type: 'enum', defaultValue: 'A', values: ['A', 'B'] },
+        { name: 'Caption', pineInputId: 'in_6', type: 'str', defaultValue: 'x' }
+      ]
+    })
+    const byName = Object.fromEntries(study.metainfo.inputs.map(input => [input.name, input]))
+    assert.equal(byName.Length.type, 'integer')
+    assert.equal(byName.Length.defval, 14)
+    assert.equal(byName.Length.min, 2)
+    assert.equal(byName.Length.max, 500)
+    assert.equal(byName.Length.step, 1)
+    assert.equal(byName.Smooth.type, 'float')
+    assert.equal(byName.Smooth.defval, 0.5)
+    assert.equal(byName.Show.type, 'bool')
+    assert.equal(byName.Show.defval, true)
+    assert.equal(byName.Tint.type, 'color')
+    assert.equal(byName.Period.type, 'resolution')
+    assert.equal(byName.Mode.type, 'text')
+    assert.deepEqual(byName.Mode.options, ['A', 'B'])
+    assert.equal(byName.Caption.type, 'text')
+    // Every input has an id the study API can read back, or the dialog opens
+    // with controls whose values can never be turned into parameters again.
+    for (const input of study.metainfo.inputs) assert.match(input.id, /^in_\d+$/)
+    assert.deepEqual(study.inputMap, {
+      in_0: 'Length',
+      in_1: 'Smooth',
+      in_2: 'Show',
+      in_3: 'Tint',
+      in_4: 'Period',
+      in_5: 'Mode',
+      in_6: 'Caption'
+    })
+  })
+
+  it('takes the saved override as the default, not the script literal', () => {
+    const study = plots.buildCustomIndicator({
+      indicatorId: 21,
+      name: 'EMA',
+      key: 'k',
+      series,
+      candleTimes: times,
+      params: { Length: 50 },
+      inputSpecs: [{ name: 'Length', pineInputId: 'in_0', type: 'int', defaultValue: 14 }]
+    })
+    assert.equal(study.metainfo.inputs[0].defval, 50)
+    assert.equal(study.metainfo.defaults.inputs.in_0, 50)
+  })
+
+  it('translates the colour names Pine scripts actually write', () => {
+    // `color.red` is not a CSS colour; feeding it to the library would render
+    // the study in the fallback colour and look like the input was ignored.
+    const study = plots.buildCustomIndicator({
+      indicatorId: 22,
+      name: 'Coloured',
+      key: 'k',
+      series,
+      candleTimes: times,
+      inputSpecs: [{ name: 'Tint', pineInputId: 'in_0', type: 'color', defaultValue: 'color.red' }]
+    })
+    assert.equal(study.metainfo.inputs[0].defval, '#F23645')
+  })
+
+  it('reads the input specs back out of the script before building the study', async () => {
+    const t = candleTimesMs(2)
+    globalThis.__qdPineInputs = () => [
+      { name: 'Length', pineInputId: 'in_0', type: 'int', defaultValue: '14' }
+    ]
+    try {
+      const built = await withStudy({
+        candles: candleRows(t),
+        plots: {
+          plots: [{ name: 'EMA', type: 'line', overlay: true, data: [1, 2] }],
+          signals: [],
+          candleTimes: t
+        },
+        run: () => plots.resolveCustomIndicators({
+          indicators: [{
+            indicatorId: 23,
+            name: 'EMA',
+            code: '//@version=5\nindicator("e")\nlength = input.int(14, "Length")\nplot(close)',
+            params: { Length: 50 }
+          }],
+          market: 'Crypto',
+          symbol: 'BTC/USDT',
+          timeframe: '1H',
+          cache: plots.createSeriesCache()
+        })
+      })
+      assert.equal(built.indicators[0].metainfo.inputs[0].id, 'in_0')
+      assert.equal(built.indicators[0].metainfo.inputs[0].defval, 50)
+      assert.equal(built.indicators[0].inputMap.in_0, 'Length')
+    } finally {
+      delete globalThis.__qdPineInputs
+    }
   })
 })
