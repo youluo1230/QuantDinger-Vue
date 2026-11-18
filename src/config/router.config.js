@@ -54,12 +54,12 @@ export const asyncRouterMap = [
         component: () => import('@/views/indicator-ide'),
         meta: { title: 'menu.dashboard.indicatorIde', keepAlive: true, icon: 'line-chart', permission: ['dashboard'] }
       },
-      // TradingView chart workspace.
+      // The chart workspace moved into the indicator IDE; keep old links working.
       {
         path: '/tv-workbench',
         name: 'TradingViewWorkbench',
-        component: () => import('@/views/tv-workbench'),
-        meta: { title: 'menu.dashboard.tvWorkbench', keepAlive: false, icon: 'stock', permission: ['dashboard'] }
+        redirect: '/indicator-ide',
+        hidden: true
       },
       {
         path: '/universe-manager',

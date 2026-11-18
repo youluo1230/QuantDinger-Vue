@@ -586,7 +586,6 @@ export default {
         '/ai-asset-analysis',
         '/indicator-community',
         '/indicator-ide',
-        '/tv-workbench',
         '/strategy-ide',
         '/backtest-center',
         '/strategy-center',
