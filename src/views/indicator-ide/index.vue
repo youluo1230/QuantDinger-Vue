@@ -393,14 +393,7 @@
                           </a-button>
                         </span>
                       </a-tooltip>
-                      <a-tooltip :title="chartFullscreen ? $t('indicatorIde.exitFullscreen') : $t('indicatorIde.fullscreenChart')">
-                        <a-button
-                          size="small"
-                          class="chart-panel-fs-btn"
-                          :aria-label="chartFullscreen ? $t('indicatorIde.exitFullscreen') : $t('indicatorIde.fullscreenChart')"
-                          @click="toggleChartFullscreen"
-                        ><a-icon :type="chartFullscreen ? 'fullscreen-exit' : 'fullscreen'" /></a-button>
-                      </a-tooltip>
+
                       <a-dropdown
                         :trigger="['click']"
                         placement="bottomRight"
@@ -433,123 +426,6 @@
                     </div>
                   </div>
                   <div class="chart-panel-toolbar-controls">
-                    <div class="ide-toolbar-group ide-toolbar-group--watchlist">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.watchlist') }}</span>
-                      <a-select
-                        :value="toolbarSelectedKey"
-                        option-label-prop="label"
-                        class="ide-toolbar-select ide-toolbar-select--watchlist chart-panel-watchlist-select"
-                        :placeholder="$t('backtest-center.config.watchlistPlaceholder')"
-                        size="small"
-                        show-search
-                        :loading="loadingWatchlist"
-                        :filter-option="filterWatchlistOption"
-                        :dropdown-class-name="isDarkTheme ? 'ide-watchlist-dropdown ide-watchlist-dropdown--dark' : 'ide-watchlist-dropdown'"
-                        :get-popup-container="chartToolbarGetPopupContainer"
-                        @change="handleWatchlistChange"
-                        @dropdownVisibleChange="onWatchlistDropdownVisibleChange"
-                      >
-                        <a-select-option
-                          v-for="w in toolbarWatchlistOptions"
-                          :key="watchlistAssetKey(w)"
-                          :value="watchlistAssetKey(w)"
-                          :label="w.symbol"
-                          :title="[w.symbol, watchlistContextLabel(w)].join(' · ')"
-                        >
-                          <span class="wl-opt-tag" :class="'wl-mkt-' + (w.market || '').toLowerCase()">{{ marketLabel(w.market) }}</span>
-                          <strong class="wl-opt-symbol">{{ w.symbol }}</strong>
-                          <a-tag v-if="isExchangeEquityProduct(w)" color="blue" class="wl-product-tag">
-                            {{ productTypeLabel(w.product_type) }}
-                          </a-tag>
-                          <span class="wl-opt-name">{{ watchlistContextLabel(w) }}</span>
-                        </a-select-option>
-                        <a-select-option key="__add__" value="__add__" class="add-option">
-                          <div class="ide-watchlist-add-row">
-                            <a-icon type="plus" /> {{ $t('watchlistAssets.add') }}
-                          </div>
-                        </a-select-option>
-                      </a-select>
-                    </div>
-                    <div v-if="market === 'Crypto'" class="ide-toolbar-group ide-toolbar-group--venue">
-                      <span class="ide-toolbar-label">{{ $t('marketContext.source') }}</span>
-                      <div class="ide-market-context-controls">
-                        <a-select
-                          v-model="cryptoExchangeId"
-                          size="small"
-                          class="ide-toolbar-select ide-toolbar-select--exchange"
-                          :disabled="!cryptoExchangeIds.length"
-                          :get-popup-container="chartToolbarGetPopupContainer"
-                          @change="handleCryptoExchangeChange"
-                        >
-                          <a-select-option v-for="exchangeId in cryptoExchangeIds" :key="exchangeId" :value="exchangeId">
-                            {{ exchangeId.toUpperCase() }}
-                          </a-select-option>
-                        </a-select>
-                        <a-select
-                          v-if="canSwitchCryptoMarketType"
-                          v-model="cryptoMarketType"
-                          size="small"
-                          class="ide-toolbar-select ide-toolbar-select--market-type"
-                          :get-popup-container="chartToolbarGetPopupContainer"
-                          @change="handleCryptoMarketTypeChange"
-                        >
-                          <a-select-option value="spot">{{ $t('marketContext.spot') }}</a-select-option>
-                          <a-select-option value="swap">{{ $t('marketContext.swap') }}</a-select-option>
-                        </a-select>
-                        <span v-else class="ide-market-type-fixed">
-                          {{ currentCryptoMarketTypeLabel }}
-                        </span>
-                      </div>
-                    </div>
-                    <div class="ide-toolbar-group ide-toolbar-group--chart-type">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.chartType.label') }}</span>
-                      <a-dropdown
-                        :trigger="['click']"
-                        placement="bottomLeft"
-                        :get-popup-container="chartToolbarGetPopupContainer"
-                        :overlay-class-name="isDarkTheme ? 'ide-chart-type-dropdown ide-chart-type-dropdown--dark' : 'ide-chart-type-dropdown'"
-                      >
-                        <a-button
-                          size="small"
-                          class="ide-chart-type-trigger"
-                          :title="currentChartTypeLabel"
-                          :aria-label="currentChartTypeLabel"
-                        >
-                          <span class="ide-chart-type-icon" :class="`ide-chart-type-icon--${chartCandleType}`" aria-hidden="true">
-                            <i></i><i></i><i></i>
-                          </span>
-                          <a-icon type="down" />
-                        </a-button>
-                        <a-menu slot="overlay" :selected-keys="[chartCandleType]" @click="onChartTypeMenuClick">
-                          <a-menu-item v-for="option in chartTypeOptions" :key="option.value">
-                            <span class="ide-chart-type-menu-item">
-                              <span class="ide-chart-type-icon" :class="`ide-chart-type-icon--${option.value}`" aria-hidden="true">
-                                <i></i><i></i><i></i>
-                              </span>
-                              <span>{{ option.label }}</span>
-                            </span>
-                          </a-menu-item>
-                        </a-menu>
-                      </a-dropdown>
-                    </div>
-                    <div class="ide-toolbar-group ide-toolbar-group--tf">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.timeframe') }}</span>
-                      <a-radio-group
-                        v-model="timeframe"
-                        button-style="solid"
-                        size="small"
-                        class="tf-group ide-tf-seg ide-tf-seg--chart"
-                      >
-                        <a-radio-button value="1m">1m</a-radio-button>
-                        <a-radio-button value="5m">5m</a-radio-button>
-                        <a-radio-button value="15m">15m</a-radio-button>
-                        <a-radio-button value="30m">30m</a-radio-button>
-                        <a-radio-button value="1H">1H</a-radio-button>
-                        <a-radio-button value="4H">4H</a-radio-button>
-                        <a-radio-button value="1D">1D</a-radio-button>
-                        <a-radio-button value="1W">1W</a-radio-button>
-                      </a-radio-group>
-                    </div>
                     <div class="ide-toolbar-group ide-toolbar-group--indicator">
                       <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.indicator') }}</span>
                       <a-dropdown
@@ -601,24 +477,7 @@
                         </div>
                       </a-dropdown>
                     </div>
-                    <div class="ide-toolbar-group ide-toolbar-group--params">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.paramPanel.shortTitle') }}</span>
-                      <a-button
-                        size="small"
-                        class="ide-param-trigger"
-                        :type="currentIndicatorParamSpecs.length ? 'primary' : 'default'"
-                        :disabled="!selectedIndicatorId"
-                        :title="$t('indicatorIde.paramPanel.button')"
-                        :aria-label="$t('indicatorIde.paramPanel.button')"
-                        @click="openIndicatorParamsDrawer"
-                      >
-                        <span>{{ $t('indicatorIde.paramPanel.button') }}</span>
-                        <span v-if="currentIndicatorParamSpecs.length" class="ide-param-count">{{ currentIndicatorParamSpecs.length }}</span>
-                      </a-button>
-                    </div>
-                  </div>
-                </div>
-                <div class="chart-panel-inner">
+                    <div class="chart-panel-inner">
                   <div class="ide-chart-layout" :class="`ide-chart-layout--${chartLayoutMode}`">
                     <div
                       v-for="(pane, paneIndex) in visibleChartPanes"
@@ -660,6 +519,7 @@
                           @price-change="payload => handlePanePriceChange(pane.id, payload)"
                           @symbol-change="payload => handlePaneSymbolChange(pane.id, payload)"
                           @interval-change="payload => handlePaneIntervalChange(pane.id, payload)"
+                          @chart-type-change="payload => handlePaneChartTypeChange(pane.id, payload)"
                         />
                       </div>
                     </div>
@@ -767,133 +627,6 @@
       @close="showAddModal = false"
       @added="reloadWatchlistOnly"
     />
-
-    <a-modal
-      :title="$t('indicatorIde.paramPanel.title')"
-      :visible="paramDrawerVisible"
-      :width="760"
-      :footer="null"
-      centered
-      :get-container="ideModalGetContainer"
-      :wrap-class-name="isDarkTheme ? 'ide-modal-wrap ide-modal-wrap--dark ide-param-modal-wrap' : 'ide-modal-wrap ide-param-modal-wrap'"
-      @cancel="paramDrawerVisible = false"
-    >
-      <div class="ide-param-drawer">
-        <div class="ide-param-drawer__hero">
-          <div>
-            <span>{{ $t('indicatorIde.paramPanel.currentIndicator') }}</span>
-            <strong>{{ selectedIndicatorDisplayName }}</strong>
-          </div>
-          <a-tag :color="selectedIndicatorCodeHidden ? 'gold' : 'green'">
-            {{ selectedIndicatorCodeHidden ? $t('indicatorIde.paramPanel.hiddenSource') : $t('indicatorIde.paramPanel.visibleSource') }}
-          </a-tag>
-        </div>
-
-        <a-empty
-          v-if="!currentIndicatorParamSpecs.length"
-          class="ide-param-empty"
-          :description="$t('indicatorIde.paramPanel.noParams')"
-        />
-
-        <div v-else class="ide-param-list">
-          <div
-            v-for="spec in currentIndicatorParamSpecs"
-            :key="spec.name"
-            class="ide-param-item"
-          >
-            <div class="ide-param-item__head">
-              <div>
-                <strong>{{ spec.label || spec.name }}</strong>
-                <code>{{ spec.name }}</code>
-              </div>
-              <a-tag size="small">{{ spec.type }}</a-tag>
-            </div>
-            <p v-if="spec.description" class="ide-param-item__desc">{{ spec.description }}</p>
-
-            <a-switch
-              v-if="spec.type === 'bool'"
-              :checked="!!indicatorParamDraft[spec.name]"
-              @change="val => onIndicatorParamDraftChange(spec, val)"
-            />
-            <a-select
-              v-else-if="spec.values && spec.values.length"
-              :value="indicatorParamDraft[spec.name]"
-              size="small"
-              class="ide-param-item__control"
-              @change="val => onIndicatorParamDraftChange(spec, val)"
-            >
-              <a-select-option
-                v-for="opt in spec.values"
-                :key="String(opt)"
-                :value="opt"
-              >{{ opt }}</a-select-option>
-            </a-select>
-            <a-input-number
-              v-else-if="spec.type === 'int' || spec.type === 'float'"
-              :value="indicatorParamDraft[spec.name]"
-              :min="spec.min"
-              :max="spec.max"
-              :step="spec.step || (spec.type === 'int' ? 1 : 0.1)"
-              :precision="spec.type === 'int' ? 0 : undefined"
-              class="ide-param-item__control"
-              size="small"
-              @change="val => onIndicatorParamDraftChange(spec, val)"
-            />
-            <a-input
-              v-else
-              :value="indicatorParamDraft[spec.name]"
-              class="ide-param-item__control"
-              size="small"
-              @change="e => onIndicatorParamDraftChange(spec, e.target.value)"
-            />
-
-            <div class="ide-param-item__meta">
-              <span>{{ $t('indicatorIde.paramPanel.defaultValue') }}: <b>{{ formatIndicatorParamValue(spec.defaultValue) }}</b></span>
-              <span v-if="spec.rangeText">{{ spec.rangeText }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="ide-param-drawer__footer">
-          <div class="ide-param-drawer__secondary-actions">
-            <a-button class="ide-param-action-btn ide-param-action-btn--quiet" size="small" @click="resetIndicatorParamsToDeclared">
-              <a-icon type="reload" />
-              {{ $t('indicatorIde.paramPanel.reset') }}
-            </a-button>
-            <a-button
-              class="ide-param-action-btn ide-param-action-btn--quiet"
-              size="small"
-              :disabled="!currentIndicatorParamSpecs.length"
-              @click="saveIndicatorParamDefaults"
-            >
-              <a-icon type="save" />
-              {{ $t('indicatorIde.paramPanel.saveDefault') }}
-            </a-button>
-            <a-tooltip :title="selectedIndicatorCodeHidden ? $t('indicatorIde.paramPanel.writeBlockedHidden') : $t('indicatorIde.paramPanel.writeBackHint')">
-              <a-button
-                class="ide-param-action-btn ide-param-action-btn--secondary"
-                size="small"
-                :disabled="!currentIndicatorParamSpecs.length || selectedIndicatorCodeHidden"
-                @click="writeIndicatorParamsToCode"
-              >
-                <a-icon type="edit" />
-                {{ $t('indicatorIde.paramPanel.writeBack') }}
-              </a-button>
-            </a-tooltip>
-          </div>
-          <a-button
-            type="primary"
-            class="ide-param-action-btn ide-param-action-btn--apply"
-            size="small"
-            :disabled="!currentIndicatorParamSpecs.length"
-            @click="applyIndicatorParams"
-          >
-            <a-icon type="play-circle" />
-            {{ $t('indicatorIde.paramPanel.apply') }}
-          </a-button>
-        </div>
-      </div>
-    </a-modal>
 
     <a-modal
       :title="$t('indicatorIde.signalAlert.title')"
@@ -1231,7 +964,7 @@
 <script>
 import CodeMirror from 'codemirror'
 import { definePineMode } from '@/charting/pineMode'
-import { applyPineInputValues, parsePineInputDefaults, parsePineInputSpecs } from '@/charting/pineInputs'
+import { parsePineInputDefaults, parsePineInputSpecs } from '@/charting/pineInputs'
 import 'codemirror/lib/codemirror.css'
 import 'codemirror/theme/monokai.css'
 import 'codemirror/theme/eclipse.css'
@@ -1252,7 +985,7 @@ import { getUserInfo } from '@/api/login'
 import { getNotificationSettings } from '@/api/user'
 import { getWatchlist, getSymbolCapabilities } from '@/api/market'
 import AddWatchlistModal from '@/components/Watchlist/AddWatchlistModal.vue'
-import { groupWatchlistAssets, watchlistAssetKey, watchlistContextLabel } from '@/utils/watchlistAssets'
+import { watchlistAssetKey, watchlistContextLabel } from '@/utils/watchlistAssets'
 import { getPublicSettingsConfig } from '@/api/settings'
 import { extractIndicatorSignalLabels } from '@/utils/indicatorSignalOptions'
 import { renderSafeMarkdown } from '@/utils/safeMarkdown'
@@ -1339,7 +1072,6 @@ export default {
 
       codeDrawerVisible: true,
       codePanelExpanded: true,
-      paramsPanelExpanded: true,
 
       market: 'Crypto',
       symbol: 'BTC/USDT',
@@ -1376,9 +1108,6 @@ export default {
       quickTradePosition: null,
       quickTradeSize: null,
       quickTradeChartPositions: [],
-      paramDrawerVisible: false,
-      indicatorParamOverrides: {},
-      indicatorParamDraft: {},
       signalAlertModalVisible: false,
       signalAlertActiveTab: 'create',
       signalAlertLoading: false,
@@ -1557,25 +1286,6 @@ export default {
     visibleChartPanes () {
       return (this.chartPanes || []).slice(0, this.chartLayoutMode)
     },
-    chartTypeOptions () {
-      return [
-        { value: 'candle_solid', label: this.$t('indicatorIde.chartType.candleSolid') },
-        { value: 'candle_stroke', label: this.$t('indicatorIde.chartType.candleStroke') },
-        { value: 'candle_up_stroke', label: this.$t('indicatorIde.chartType.candleUpStroke') },
-        { value: 'candle_down_stroke', label: this.$t('indicatorIde.chartType.candleDownStroke') },
-        { value: 'ohlc', label: this.$t('indicatorIde.chartType.ohlc') },
-        { value: 'line', label: this.$t('indicatorIde.chartType.line') },
-        { value: 'area', label: this.$t('indicatorIde.chartType.area') },
-        { value: 'hlc_area', label: this.$t('indicatorIde.chartType.hlcArea') },
-        { value: 'heikin_ashi', label: this.$t('indicatorIde.chartType.heikinAshi') },
-        { value: 'renko', label: this.$t('indicatorIde.chartType.renko') },
-        { value: 'range', label: this.$t('indicatorIde.chartType.range') }
-      ]
-    },
-    currentChartTypeLabel () {
-      const current = this.chartTypeOptions.find(option => option.value === this.chartCandleType)
-      return current ? current.label : this.$t('indicatorIde.chartType.candleSolid')
-    },
     ideQtOverlayGetContainer () {
       return (trigger) => this.chartToolbarGetPopupContainer(trigger)
     },
@@ -1594,12 +1304,6 @@ export default {
     },
     klineRealtimeEnabled () {
       return !!(this.symbol && String(this.symbol).trim())
-    },
-    canSwitchCryptoMarketType () {
-      return this.market === 'Crypto' && this.availableCryptoMarketTypes.includes('spot') && this.availableCryptoMarketTypes.includes('swap')
-    },
-    currentCryptoMarketTypeLabel () {
-      return this.$t(this.cryptoMarketType === 'swap' ? 'marketContext.swap' : 'marketContext.spot')
     },
     selectedIndicatorObj () {
       return this.selectedIndicatorId
@@ -1621,9 +1325,6 @@ export default {
       if (!ind) return ''
       return this.getIndicatorExecutableCode(ind, undefined)
     },
-    currentIndicatorParamSpecs () {
-      return this.parseIndicatorParamSpecs(this.selectedIndicatorParamCode || '')
-    },
     currentIndicatorParamValues () {
       const ind = this.selectedIndicatorObj
       if (!ind) return {}
@@ -1643,32 +1344,6 @@ export default {
         list.unshift({ market: this.market, symbol: this.symbol, name: this.qtSymbol === this.symbol ? '' : this.qtSymbol })
       }
       return list
-    },
-    currentWatchlistContext () {
-      return {
-        asset_id: this.currentAssetId,
-        market: this.market,
-        symbol: this.symbol,
-        exchange_id: this.market === 'Crypto' ? this.cryptoExchangeId : '',
-        market_type: this.market === 'Crypto' ? this.cryptoMarketType : 'spot',
-        instrument_id: this.currentInstrumentId,
-        product_type: this.currentProductType,
-        underlying_market: this.currentUnderlyingMarket,
-        underlying_symbol: this.currentUnderlyingSymbol
-      }
-    },
-    toolbarWatchlistOptions () {
-      const list = [...this.watchlist]
-      const current = this.currentWatchlistContext
-      if (current.market && current.symbol && !list.some(item => watchlistAssetKey(item) === watchlistAssetKey(current))) {
-        list.unshift(current)
-      }
-      return groupWatchlistAssets(list, current).map(group => group.item)
-    },
-    toolbarSelectedKey () {
-      const current = this.currentWatchlistContext
-      const row = this.toolbarWatchlistOptions.find(item => watchlistAssetKey(item) === watchlistAssetKey(current))
-      return row ? watchlistAssetKey(row) : undefined
     },
     signalAlertSignalOptions () {
       return this.extractSignalAlertOptions(this.selectedIndicatorParamCode || this.currentCode)
@@ -2069,14 +1744,23 @@ export default {
       }
       this.schedulePersistIdeUiState()
     },
+    handlePaneChartTypeChange (paneId, change) {
+      const pane = this.chartPanes.find(item => item.id === paneId)
+      if (!pane || !change) return
+      const chartType = String(change.chartType || '').trim()
+      if (!supportedChartTypes.has(chartType) || chartType === pane.candleType) return
+      if (paneId === this.activeChartPaneId) {
+        this.chartCandleType = chartType
+        storage.set(chartTypeStorageKey(this.userId), chartType)
+      } else {
+        const index = this.chartPanes.findIndex(item => item.id === paneId)
+        if (index >= 0) this.$set(this.chartPanes, index, { ...pane, candleType: chartType })
+      }
+      this.schedulePersistIdeUiState()
+    },
     restoreChartTypePreference () {
       const saved = storage.get(chartTypeStorageKey(this.userId))
       if (supportedChartTypes.has(saved)) this.chartCandleType = saved
-    },
-    onChartTypeMenuClick ({ key }) {
-      if (!supportedChartTypes.has(key)) return
-      this.chartCandleType = key
-      storage.set(chartTypeStorageKey(this.userId), key)
     },
     handleTabCacheEviction (route) {
       const key = routeCacheKey(route)
@@ -2658,7 +2342,7 @@ export default {
       if (!code || typeof code !== 'string') return {}
       return parsePineInputDefaults(code)
     },
-    normalizeIndicatorParamMap (params, specs = this.currentIndicatorParamSpecs) {
+    normalizeIndicatorParamMap (params, specs = []) {
       const out = {}
       for (const spec of specs || []) {
         const hasValue = params && Object.prototype.hasOwnProperty.call(params, spec.name)
@@ -2695,65 +2379,6 @@ export default {
         ? this.indicatorParamOverrides[id]
         : {}
       return this.normalizeIndicatorParamMap({ ...defaults, ...saved }, specs)
-    },
-    resetIndicatorParamDraft (preferCurrent = true) {
-      const source = preferCurrent ? this.currentIndicatorParamValues : {}
-      this.indicatorParamDraft = this.normalizeIndicatorParamMap(source)
-    },
-    openIndicatorParamsDrawer () {
-      this.resetIndicatorParamDraft(true)
-      this.paramDrawerVisible = true
-    },
-    onIndicatorParamDraftChange (spec, value) {
-      const next = {
-        ...this.indicatorParamDraft,
-        [spec.name]: this.castIndicatorParamValue(value, spec.type)
-      }
-      this.indicatorParamDraft = this.normalizeIndicatorParamMap(next)
-    },
-    applyIndicatorParams () {
-      if (!this.selectedIndicatorObj || !this.currentIndicatorParamSpecs.length) return
-      const id = String(this.selectedIndicatorObj.id)
-      const next = this.normalizeIndicatorParamMap(this.indicatorParamDraft)
-      this.$set(this.indicatorParamOverrides, id, next)
-      this.syncSelectedIndicatorToChart()
-      this.$message.success(this.$t('indicatorIde.paramPanel.applySuccess'))
-    },
-    saveIndicatorParamDefaults () {
-      if (!this.selectedIndicatorObj || !this.currentIndicatorParamSpecs.length) return
-      const id = String(this.selectedIndicatorObj.id)
-      const next = this.normalizeIndicatorParamMap(this.indicatorParamDraft)
-      this.$set(this.indicatorParamOverrides, id, next)
-      this.persistIndicatorParamDefaults()
-      this.syncSelectedIndicatorToChart()
-      this.$message.success(this.$t('indicatorIde.paramPanel.saveSuccess'))
-    },
-    resetIndicatorParamsToDeclared () {
-      if (!this.selectedIndicatorObj) return
-      const id = String(this.selectedIndicatorObj.id)
-      const defaults = this.normalizeIndicatorParamMap({})
-      this.indicatorParamDraft = defaults
-      this.$delete(this.indicatorParamOverrides, id)
-      this.persistIndicatorParamDefaults()
-      this.syncSelectedIndicatorToChart()
-    },
-    writeIndicatorParamsToCode () {
-      if (this.selectedIndicatorCodeHidden || !this.currentIndicatorParamSpecs.length) return
-      const nextCode = applyPineInputValues(this.currentCode || '', this.normalizeIndicatorParamMap(this.indicatorParamDraft))
-      if (nextCode === this.currentCode) {
-        this.$message.info(this.$t('indicatorIde.applyCandidateNoChanges'))
-        return
-      }
-      this.currentCode = nextCode
-      this.codeDirty = true
-      if (this.cmInstance) this.cmInstance.setValue(nextCode)
-      this.syncSelectedIndicatorToChart(nextCode)
-      this.$message.success(this.$t('indicatorIde.paramPanel.writeSuccess'))
-    },
-    formatIndicatorParamValue (value) {
-      if (typeof value === 'boolean') return value ? 'true' : 'false'
-      if (value == null || value === '') return '--'
-      return String(value)
     },
     extractSignalAlertOptions (code) {
       return [
@@ -3037,7 +2662,6 @@ export default {
           this.cmInstance.setValue(this.currentCode)
         }
         this.syncSelectedIndicatorToChart()
-        this.resetIndicatorParamDraft(true)
         this.loadAiWorkspace(id)
       } else {
         this.currentCode = ''
@@ -3047,7 +2671,6 @@ export default {
           this.cmInstance.setValue('')
         }
         this.syncSelectedIndicatorToChart()
-        this.indicatorParamDraft = {}
         this.resetAiWorkspaceState()
       }
       this.$nextTick(() => this.applyCodeMirrorReadOnly())
@@ -3118,9 +2741,6 @@ export default {
       }
       this.chartIndicatorRunning = !this.chartIndicatorRunning
       this.syncSelectedIndicatorToChart()
-    },
-    onWatchlistDropdownVisibleChange (visible) {
-      if (visible && !this.loadingWatchlist) this.loadWatchlist()
     },
     onIndicatorDropdownVisibleChange (visible) {
       this.indicatorDropdownVisible = visible
@@ -3209,21 +2829,6 @@ export default {
     },
     async toggleEditorFullscreen () {
       const el = this.$refs.editorFullscreenEl
-      if (!el) return
-      try {
-        const fsEl = document.fullscreenElement || document.webkitFullscreenElement
-        if (fsEl === el) {
-          if (document.exitFullscreen) await document.exitFullscreen()
-          else if (document.webkitExitFullscreen) await document.webkitExitFullscreen()
-        } else if (el.requestFullscreen) await el.requestFullscreen()
-        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen()
-      } catch (e) {
-        console.warn('fullscreen', e)
-      }
-      this.$nextTick(() => this.onGlobalFullscreenChange())
-    },
-    async toggleChartFullscreen () {
-      const el = this.$refs.chartFullscreenEl
       if (!el) return
       try {
         const fsEl = document.fullscreenElement || document.webkitFullscreenElement
@@ -4601,38 +4206,6 @@ export default {
         if (res && res.code === 1 && Array.isArray(res.data)) this.watchlist = res.data
       } catch (_) { /* Preserve the current chart and cached list on refresh failure. */ }
     },
-    async handleWatchlistChange (val) {
-      if (val === '__add__') {
-        this.showAddModal = true
-        return
-      }
-      if (!val) return
-      this.selectedWatchlistKey = val
-      if (val) {
-        const row = this.toolbarWatchlistOptions.find(
-          w => w && w.market && w.symbol && watchlistAssetKey(w) === val
-        )
-        if (row) {
-          this.currentAssetId = Number(row.asset_id || 0)
-          this.market = String(row.market)
-          this.symbol = String(row.symbol)
-          this.applyCurrentProductContext(row)
-        } else {
-          const legacyValue = String(val).split('|')[0]
-          const i = legacyValue.indexOf(':')
-          if (i > 0) {
-            this.market = legacyValue.slice(0, i)
-            this.symbol = legacyValue.slice(i + 1)
-          }
-        }
-        this.qtSymbol = this.symbol
-      } else {
-        this.market = ''
-        this.symbol = ''
-      }
-      await this.refreshCryptoSymbolCapabilities()
-      this.persistIdeSelectionPreference()
-    },
     getMarketColor (m) {
       const colors = { Crypto: 'orange', USStock: 'blue', CNStock: 'magenta', HKStock: 'red', Forex: 'green', Futures: 'purple' }
       return colors[m] || 'default'
@@ -4859,9 +4432,6 @@ export default {
     quickTradeMinimized () {
       this.schedulePersistIdeUiState()
       this.$nextTick(() => this.clampQuickTradeFloat())
-    },
-    paramsPanelExpanded () {
-      this.$nextTick(() => this.ensureChartReady())
     },
     symbol () {
       this.quickTradeChartPositions = []

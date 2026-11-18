@@ -7,15 +7,13 @@ const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'ut
 test('indicator picker opens from cache and refreshes stale data in the background', () => {
   const source = read('src/views/indicator-ide/index.vue')
 
-  assert.match(source, /@dropdownVisibleChange="onWatchlistDropdownVisibleChange"/)
-  assert.match(source, /onWatchlistDropdownVisibleChange \(visible\)[\s\S]*visible && !this\.loadingWatchlist[\s\S]*this\.loadWatchlist\(\)/)
   assert.match(source, /@visibleChange="onIndicatorDropdownVisibleChange"/)
   assert.match(source, /onIndicatorDropdownVisibleChange \(visible\)[\s\S]*!this\.indicators\.length[\s\S]*this\.loadIndicators\(\)/)
   assert.match(source, /Date\.now\(\) - Number\(this\.indicatorsLoadedAt \|\| 0\) > 30000[\s\S]*this\.loadIndicators\(\{ background: true \}\)/)
   assert.match(source, /if \(!background\) this\.applyIndicatorRouteSelection\(\)/)
   assert.match(source, /toggleCodeDrawer \(\)[\s\S]*this\.indicatorDropdownVisible = false/)
-  assert.match(source, /v-for="w in toolbarWatchlistOptions"/)
-  assert.match(source, /toolbarWatchlistOptions \(\)[\s\S]*list\.unshift\(current\)[\s\S]*groupWatchlistAssets\(list, current\)/)
+  // The library owns the symbol picker now; no watchlist dropdown is left.
+  assert.doesNotMatch(source, /toolbarWatchlistOptions/)
   const exchangeHandler = source.match(/handleCryptoExchangeChange \(value\)[\s\S]*?\n    \},/)[0]
   const productHandler = source.match(/handleCryptoMarketTypeChange \(value\)[\s\S]*?\n    \},/)[0]
   assert.ok(!exchangeHandler.includes('selectedWatchlistKey'))

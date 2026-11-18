@@ -8,8 +8,6 @@ test('indicator workspace only switches products exposed by the exact symbol cap
   const source = read('src/views/indicator-ide/index.vue')
 
   assert.match(source, /getSymbolCapabilities/)
-  assert.match(source, /v-if="canSwitchCryptoMarketType"/)
-  assert.match(source, /availableCryptoMarketTypes\.includes\('spot'\)[\s\S]*?availableCryptoMarketTypes\.includes\('swap'\)/)
   assert.match(source, /:available-market-types="availableCryptoMarketTypes"/)
   assert.match(source, /:instrument-id="market === 'Crypto' \? currentInstrumentId : ''"/)
   assert.match(source, /:product-type="market === 'Crypto' \? currentProductType : ''"/)

@@ -28,7 +28,7 @@
 </template>
 
 <script>
-import { createBarStore, intervalFor, mountTradingViewChart, seriesTypeFor } from '@/charting/tradingview'
+import { chartTypeForSeriesType, createBarStore, intervalFor, mountTradingViewChart, seriesTypeFor } from '@/charting/tradingview'
 import { timeframeFromResolution } from '@/charting/datafeed'
 import { encodeSymbolTicker } from '@/charting/symbolTicker'
 import { createSeriesCache, createStudyBarCache, resolveCustomIndicators } from '@/charting/indicatorPlots'
@@ -647,6 +647,8 @@ export default {
         offInterval?.subscribe?.(null, (interval) => this.onLibraryIntervalChanged(interval))
         const offSymbol = chart.onSymbolChanged?.()
         offSymbol?.subscribe?.(null, (info) => this.onLibrarySymbolResolved(info))
+        const offType = chart.onChartTypeChanged?.()
+        offType?.subscribe?.(null, (seriesType) => this.onLibraryChartTypeChanged(seriesType))
         // The subscriptions outlive the callbacks' usefulness the moment the
         // widget is destroyed; unsubscribing explicitly is what keeps a rebuilt
         // chart from calling into a dead component.
@@ -655,6 +657,7 @@ export default {
             widget.unsubscribe?.('study_properties_changed', this.onStudyPropertiesChanged)
             offInterval?.unsubscribe?.(null)
             offSymbol?.unsubscribe?.(null)
+            offType?.unsubscribe?.(null)
           } catch (err) {
             if (process.env.NODE_ENV !== 'production') {
               console.debug('chart unsubscribe failed', err)
@@ -666,6 +669,20 @@ export default {
           console.debug('chart subscription failed', err)
         }
       }
+    },
+    /**
+     * The header's style picker, as the pane's chart type.
+     *
+     * `applyChartType` writes the IDE's name into the library; the library
+     * reports the series back, and only a series the pane did not ask for is a
+     * user change. Comparing series instead of names keeps that write from
+     * echoing back as a change (several names share one series).
+     */
+    onLibraryChartTypeChanged (seriesType) {
+      if (Number(seriesType) === seriesTypeFor(this.candleType)) return
+      const chartType = chartTypeForSeriesType(seriesType)
+      if (!chartType) return
+      this.$emit('chart-type-change', { chartType })
     },
     /** The header's interval picker, as the pane's timeframe. */
     onLibraryIntervalChanged (interval) {

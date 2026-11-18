@@ -53,7 +53,7 @@ test('settings and trading workspaces consume the venue policy', () => {
   assert.match(modal, /normalizeEnabledTradingVenues/)
   assert.match(indicatorIde, /normalizeEnabledTradingVenues/)
   assert.match(indicatorIde, /loadTradingVenueConfig/)
-  assert.match(indicatorIde, /:disabled="!cryptoExchangeIds\.length"/)
+  assert.match(indicatorIde, /this\.cryptoExchangeIds\.includes\(normalized\)/)
 })
 
 

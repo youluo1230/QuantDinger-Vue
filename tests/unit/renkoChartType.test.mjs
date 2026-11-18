@@ -76,10 +76,10 @@ test('derived chart types calculate real price series', () => {
 })
 
 test('indicator workspace exposes Renko and calculates indicators from displayed bricks', () => {
-  assert.match(indicatorIdeSource, /value:\s*'renko'/)
-  assert.match(indicatorIdeSource, /value:\s*'heikin_ashi'/)
-  assert.match(indicatorIdeSource, /value:\s*'hlc_area'/)
-  assert.match(indicatorIdeSource, /value:\s*'range'/)
+  assert.match(indicatorIdeSource, /supportedChartTypes = new Set\(\[[\s\S]*'renko'/)
+  assert.match(indicatorIdeSource, /supportedChartTypes = new Set\(\[[\s\S]*'heikin_ashi'/)
+  assert.match(indicatorIdeSource, /supportedChartTypes = new Set\(\[[\s\S]*'hlc_area'/)
+  assert.match(indicatorIdeSource, /supportedChartTypes = new Set\(\[[\s\S]*'range'/)
   assert.match(indicatorIdeSource, /codeDrawerVisible:\s*true/)
   assert.match(klineChartSource, /buildRenkoBricks\(sourceRows, \{ atrLength: 14 \}\)/)
   assert.match(klineChartSource, /buildHeikinAshiRows\(sourceRows\)/)

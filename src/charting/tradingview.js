@@ -116,10 +116,6 @@ export function buildWidgetOptions ({
     loading_screen: { backgroundColor: theme === 'dark' ? '#131722' : '#ffffff' },
     disabled_features: [
       'use_localstorage_for_settings',
-      'header_symbol_search',
-      'symbol_search_hot_key',
-      // The backend is the only symbol authority; the library's own exchange
-      // picker would offer pairs the venue may not carry.
       'show_symbol_logo_in_legend',
       'legend_inplace_edit'
     ],
@@ -172,6 +168,27 @@ const CHART_SERIES_TYPES = {
 
 export function seriesTypeFor (chartType) {
   return CHART_SERIES_TYPES[String(chartType || '').trim()] || 1
+}
+
+/**
+ * The IDE chart-type name for a library series type.
+ *
+ * The library's type picker reports the series it switched to, not which of the
+ * IDE's names produced it: both `candle_solid` and `candle_stroke` are candles.
+ * The IDE only needs a name that maps back to the same series on a rebuild, so
+ * the canonical name is the right answer.
+ */
+const SERIES_TYPES_CHART = {
+  0: 'ohlc',
+  1: 'candle_solid',
+  2: 'line',
+  3: 'area',
+  4: 'renko',
+  8: 'heikin_ashi'
+}
+
+export function chartTypeForSeriesType (seriesType) {
+  return SERIES_TYPES_CHART[Number(seriesType)] || ''
 }
 
 /**
