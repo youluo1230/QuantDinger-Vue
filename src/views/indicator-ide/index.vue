@@ -1,25 +1,14 @@
 <template>
   <div class="indicator-ide" :class="{ 'theme-dark': isDarkTheme }">
     <!-- Main split panels -->
-    <div ref="ideMain" class="ide-main" :class="{ 'is-workspace-resizing': workspaceResizing }">
-      <button
-        v-if="!codeDrawerVisible"
-        type="button"
-        class="ide-code-rail"
-        :title="$t('indicatorIde.showCode')"
-        :aria-label="$t('indicatorIde.showCode')"
-        @click="toggleCodeDrawer"
-      >
-        <a-icon type="code" class="ide-code-rail__icon" />
-        <a-icon type="right" class="ide-code-rail__arrow" />
-      </button>
+    <div ref="ideMain" class="ide-main" :class="{ 'is-workspace-resizing': workspaceResizing, 'is-editor-fullscreen': editorFullscreen }">
       <!-- Left panel (collapsible drawer) -->
       <div
         v-show="codeDrawerVisible"
         ref="editorFullscreenEl"
         class="ide-left"
         :class="{ 'ide-panel--fullscreen': editorFullscreen }"
-        :style="codePanelWidthStyle"
+        :style="codePanelHeightStyle"
       >
         <!-- Code Editor -->
         <div class="code-panel">
@@ -35,6 +24,7 @@
               >
                 <a-icon type="code" />
               </button>
+              <span v-if="editorBindingLabel" class="code-panel-binding">{{ editorBindingLabel }}</span>
               <a-tag v-if="codeDirty && !selectedIndicatorCodeHidden" color="orange" size="small">{{ $t('indicatorIde.modified') }}</a-tag>
             </div>
             <div class="panel-title__trailing">
@@ -336,15 +326,15 @@
         class="ide-workspace-resizer"
         :class="{ 'is-resizing': workspaceResizing }"
         role="separator"
-        aria-orientation="vertical"
+        aria-orientation="horizontal"
         tabindex="0"
         :aria-label="$t('indicatorIde.resizeWorkspace')"
         :aria-valuenow="Math.round(workspaceSplitRatio)"
         :title="$t('indicatorIde.resizeWorkspaceHint')"
         @mousedown="startWorkspaceResize"
         @dblclick="resetWorkspaceSplit"
-        @keydown.left.prevent="adjustWorkspaceSplit(-2)"
-        @keydown.right.prevent="adjustWorkspaceSplit(2)"
+        @keydown.up.prevent="adjustWorkspaceSplit(2)"
+        @keydown.down.prevent="adjustWorkspaceSplit(-2)"
       >
         <span class="ide-workspace-resizer__line"></span>
         <span class="ide-workspace-resizer__grip"><i></i><i></i><i></i></span>
@@ -423,6 +413,18 @@
                           </a-menu-item>
                         </a-menu>
                       </a-dropdown>
+
+                      <a-tooltip :title="codeDrawerVisible ? $t('indicatorIde.hideCode') : $t('indicatorIde.showCode')">
+                        <a-button
+                          size="small"
+                          class="chart-panel-action-btn ide-editor-toggle"
+                          :class="{ 'is-active': codeDrawerVisible }"
+                          :aria-pressed="codeDrawerVisible"
+                          @click="toggleCodeDrawer"
+                        >
+                          <a-icon type="code" />
+                        </a-button>
+                      </a-tooltip>
 
                       <a-dropdown
                         :trigger="['click']"
@@ -1285,12 +1287,20 @@ export default {
     }
   },
   computed: {
-    codePanelWidthStyle () {
+    codePanelHeightStyle () {
       if (!this.codeDrawerVisible || this.editorFullscreen) return null
       return {
         flexBasis: `${this.workspaceSplitRatio}%`,
-        width: `${this.workspaceSplitRatio}%`
+        height: `${this.workspaceSplitRatio}%`
       }
+    },
+    editorBindingLabel () {
+      const pane = this.activeChartPane
+      if (!pane) return ''
+      const match = String(pane.id || '').match(/(\d+)$/)
+      const slot = match ? `P${match[1]}` : ''
+      const parts = [slot, pane.symbol || '', pane.timeframe || ''].filter(Boolean)
+      return parts.join(' · ')
     },
     marketplaceEnabled () {
       return this.$store.state.features.config.marketplace_enabled !== false
@@ -2095,14 +2105,14 @@ export default {
     },
     workspaceSplitBounds () {
       const container = this.$refs.ideMain
-      const width = container ? container.getBoundingClientRect().width : 0
-      if (!width) return { min: 28, max: 68 }
-      const usableWidth = Math.max(1, width - 10)
-      const codeMin = Math.min(420, Math.max(320, usableWidth * 0.3))
-      const chartMin = Math.min(520, Math.max(360, usableWidth * 0.36))
-      const min = Math.max(24, (codeMin / usableWidth) * 100)
-      const max = Math.min(72, 100 - ((chartMin / usableWidth) * 100))
-      return min <= max ? { min, max } : { min: 36, max: 64 }
+      const height = container ? container.getBoundingClientRect().height : 0
+      if (!height) return { min: 24, max: 72 }
+      const usableHeight = Math.max(1, height - 10)
+      const editorMin = Math.min(320, Math.max(220, usableHeight * 0.28))
+      const chartMin = Math.min(360, Math.max(240, usableHeight * 0.3))
+      const min = Math.max(20, (editorMin / usableHeight) * 100)
+      const max = Math.min(76, 100 - ((chartMin / usableHeight) * 100))
+      return min <= max ? { min, max } : { min: 32, max: 66 }
     },
     clampWorkspaceSplit (ratio = this.workspaceSplitRatio) {
       const bounds = this.workspaceSplitBounds()
@@ -2134,7 +2144,7 @@ export default {
       if (event) event.preventDefault()
       this.workspaceResizing = true
       this._workspaceResizeMove = (moveEvent) => {
-        const raw = ((moveEvent.clientX - rect.left) / rect.width) * 100
+        const raw = ((rect.bottom - moveEvent.clientY) / rect.height) * 100
         this.clampWorkspaceSplit(raw)
       }
       this._workspaceResizeEnd = () => this.stopWorkspaceResize(true)
@@ -5309,110 +5319,85 @@ body.dark .ide-signal-alert-modal-wrap {
 // ===== Main =====
 .ide-main {
   display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   overflow: hidden;
   min-height: 0;
   align-items: stretch;
   &.is-workspace-resizing {
-    cursor: col-resize;
+    cursor: row-resize;
     user-select: none;
   }
-}
-
-.ide-code-rail {
-  flex: 0 0 30px;
-  width: 30px;
-  min-width: 30px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0;
-  cursor: pointer;
-  user-select: none;
-  font: inherit;
-  border-top: 0;
-  border-bottom: 0;
-  border-left: 0;
-  border-right: 1px solid #e2e8f0;
-  background: #f8fafc;
-  color: #94a3b8;
-  transition: background 0.16s ease, color 0.16s ease;
-  &:hover {
-    background: color-mix(in srgb, var(--primary-color, #1890ff) 6%, #f8fafc);
-    color: var(--primary-color, @primary-color);
+  // The editor takes over the whole column while it is fullscreen.
+  &.is-editor-fullscreen {
+    .ide-right,
+    .ide-workspace-resizer {
+      display: none !important;
+    }
   }
-  &:focus-visible {
-    outline: 2px solid var(--primary-color-ring, color-mix(in srgb, var(--primary-color, #1890ff) 35%, transparent));
-    outline-offset: -2px;
-  }
-}
-.ide-code-rail__icon {
-  font-size: 14px;
-}
-.ide-code-rail__arrow {
-  font-size: 9px;
 }
 
 .ide-left {
-  width: 38%;
-  min-width: 320px;
+  order: 3;
+  width: 100%;
+  min-width: 0;
   max-width: none;
-  height: 100%;
+  height: auto;
   max-height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid #eee;
+  border-top: 1px solid #eee;
   overflow: hidden;
-  flex: 0 0 38%;
+  flex: 0 0 auto;
   background: #fcfcfd;
-  position: sticky;
-  top: 0;
-  align-self: flex-start;
+  position: relative;
+  top: auto;
+  align-self: stretch;
   &.ide-panel--fullscreen {
+    order: 1;
+    flex: 1 1 auto;
     width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
-    height: 100vh !important;
-    max-height: 100vh !important;
-    position: relative;
-    top: auto;
-    align-self: stretch;
-    border-right: none;
+    height: 100% !important;
+    max-height: 100% !important;
+    border-top: none;
   }
 }
 
 .ide-workspace-resizer {
   position: relative;
   z-index: 7;
-  flex: 0 0 10px;
-  width: 10px;
-  min-width: 10px;
-  height: 100%;
-  cursor: col-resize;
+  order: 2;
+  flex: 0 0 8px;
+  width: 100%;
+  min-width: 0;
+  height: 8px;
+  min-height: 8px;
+  cursor: row-resize;
   outline: none;
   background: #f8fafc;
   transition: background .16s ease;
 }
 .ide-workspace-resizer__line {
   position: absolute;
-  inset: 0 auto 0 50%;
-  width: 1px;
-  transform: translateX(-50%);
+  inset: 50% 0 auto 0;
+  height: 1px;
+  width: auto;
+  transform: translateY(-50%);
   background: #dbe3ee;
-  transition: width .16s ease, background .16s ease, box-shadow .16s ease;
+  transition: height .16s ease, background .16s ease, box-shadow .16s ease;
 }
 .ide-workspace-resizer__grip {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 18px;
-  height: 48px;
+  width: 48px;
+  height: 18px;
   transform: translate(-50%, -50%);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: 4px;
@@ -5435,7 +5420,7 @@ body.dark .ide-signal-alert-modal-wrap {
 .ide-workspace-resizer.is-resizing {
   background: color-mix(in srgb, var(--primary-color, #1890ff) 8%, #f8fafc);
   .ide-workspace-resizer__line {
-    width: 2px;
+    height: 2px;
     background: var(--primary-color, #1890ff);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color, #1890ff) 12%, transparent);
   }
@@ -5445,6 +5430,15 @@ body.dark .ide-signal-alert-modal-wrap {
     background: color-mix(in srgb, var(--primary-color, #1890ff) 7%, #fff);
     box-shadow: 0 4px 14px color-mix(in srgb, var(--primary-color, #1890ff) 24%, transparent);
   }
+}
+
+.code-panel-binding {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
 }
 
 // ===== Code Panel =====
@@ -6793,6 +6787,7 @@ body.dark .ide-signal-alert-modal-wrap {
   overflow: hidden;
 }
 .ide-right--workspace {
+  order: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -7259,6 +7254,10 @@ body.dark .ide-signal-alert-modal-wrap {
   }
 }
 
+.ide-editor-toggle.is-active {
+  color: var(--primary-color, @primary-color);
+  border-color: color-mix(in srgb, var(--primary-color, #1890ff) 55%, #d9d9d9);
+}
 .ide-chart-workspace-btn {
   max-width: 190px;
 }
@@ -7847,15 +7846,6 @@ body.dark .ide-signal-alert-modal-wrap {
       background: #242424;
     }
   }
-  .ide-code-rail {
-    border-right-color: #303030;
-    background: #181818;
-    color: rgba(255, 255, 255, 0.38);
-    &:hover {
-      background: color-mix(in srgb, var(--primary-color, #1890ff) 8%, #181818);
-      color: var(--primary-color, #1890ff);
-    }
-  }
   .code-panel-collapse {
     color: rgba(255, 255, 255, .48);
     border-color: color-mix(in srgb, var(--primary-color, #1890ff) 28%, #303030);
@@ -7986,7 +7976,7 @@ body.dark .ide-signal-alert-modal-wrap {
     border-color: #434343;
     color: rgba(255, 255, 255, 0.65);
   }
-  .ide-left { background: #181818; border-right-color: #303030; }
+  .ide-left { background: #181818; border-top-color: #303030; }
   .ai-gen-panel { border-top-color: #303030; background: #171717; }
   .ai-gen-header { color: rgba(255,255,255,0.82); background: #1a1a1a; border-bottom-color: #303030; &:hover { background: #202020; } }
   .ai-gen-header > .anticon:first-child { background: color-mix(in srgb, var(--primary-color, #ff5b22) 14%, #1a1a1a); }

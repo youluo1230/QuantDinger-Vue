@@ -28,13 +28,13 @@ test('editor leading code icon is an accessible collapse button using the existi
   assert.match(button, /<a-icon type="code"/)
 })
 
-test('indicator workspace exposes a constrained horizontal resizer', () => {
+test('indicator workspace exposes a constrained drawer resizer', () => {
   assert.match(indicatorIdeSource, /class="ide-workspace-resizer"/)
   assert.match(indicatorIdeSource, /@mousedown="startWorkspaceResize"/)
   assert.match(indicatorIdeSource, /@dblclick="resetWorkspaceSplit"/)
   assert.match(indicatorIdeSource, /workspaceSplitBounds \(\)/)
-  assert.match(indicatorIdeSource, /const codeMin = Math\.min\(420/)
-  assert.match(indicatorIdeSource, /const chartMin = Math\.min\(520/)
+  assert.match(indicatorIdeSource, /const editorMin = Math\.min\(320/)
+  assert.match(indicatorIdeSource, /const chartMin = Math\.min\(360/)
   assert.match(indicatorIdeSource, /this\.workspaceSplitRatio = Math\.max\(bounds\.min, Math\.min\(bounds\.max/)
   assert.match(indicatorIdeSource, /<span>\{\{ \$t\('indicatorIde\.hideCode'\) \}\}<\/span>/)
 })

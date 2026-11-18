@@ -78,10 +78,10 @@ test('candidate requires an explicit user action before entering the editor', ()
   assert.doesNotMatch(viewSource, /class="ai-candidate-card"/)
 })
 
-test('desktop editor is wider while the chart remains the flexible workspace', () => {
+test('the editor is a bottom drawer while the chart keeps the flexible workspace', () => {
   assert.match(viewSource, /codeDrawerVisible: true/)
-  assert.match(viewSource, /codePanelWidthStyle \(\)[\s\S]*?flexBasis: `\$\{this\.workspaceSplitRatio\}%`/)
-  assert.match(viewSource, /\.ide-left\s*\{[\s\S]*?width: 38%;[\s\S]*?min-width: 320px;[\s\S]*?max-width: none;/)
+  assert.match(viewSource, /codePanelHeightStyle \(\)[\s\S]*?flexBasis: `\$\{this\.workspaceSplitRatio\}%`/)
+  assert.match(viewSource, /\.ide-left\s*\{[\s\S]*?order: 3;[\s\S]*?width: 100%;[\s\S]*?border-top: 1px solid #eee;/)
   assert.match(viewSource, /class="ide-workspace-resizer"/)
   assert.match(viewSource, /\.ai-conversation\s*\{[\s\S]*?flex: 1 1 auto;[\s\S]*?resize: none;/)
   assert.match(viewSource, /class="ai-composer-toolbar"/)
