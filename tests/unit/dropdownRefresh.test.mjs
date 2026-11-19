@@ -7,8 +7,10 @@ const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'ut
 test('indicator picker opens from cache and refreshes stale data in the background', () => {
   const source = read('src/views/indicator-ide/index.vue')
 
-  assert.match(source, /@visibleChange="onIndicatorDropdownVisibleChange"/)
-  assert.match(source, /onIndicatorDropdownVisibleChange \(visible\)[\s\S]*!this\.indicators\.length[\s\S]*this\.loadIndicators\(\)/)
+  assert.match(source, /@click="openIndicatorLibrary"/)
+  assert.match(source, /:visible="indicatorLibraryVisible"/)
+  assert.match(source, /openIndicatorLibrary \(\) \{[\s\S]*?this\.refreshIndicatorLibrary\(\)/)
+  assert.match(source, /refreshIndicatorLibrary \(\) \{[\s\S]*?!this\.indicators\.length[\s\S]*?this\.loadIndicators\(\)/)
   assert.match(source, /Date\.now\(\) - Number\(this\.indicatorsLoadedAt \|\| 0\) > 30000[\s\S]*this\.loadIndicators\(\{ background: true \}\)/)
   assert.match(source, /if \(!background\) this\.applyIndicatorRouteSelection\(\)/)
   assert.match(source, /toggleCodeDrawer \(\)[\s\S]*this\.indicatorDropdownVisible = false/)

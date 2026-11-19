@@ -473,55 +473,17 @@
                   </div>
                   <div class="chart-panel-toolbar-controls">
                     <div class="ide-toolbar-group ide-toolbar-group--indicator">
-                      <span class="ide-toolbar-label">{{ $t('indicatorIde.toolbar.indicator') }}</span>
-                      <a-dropdown
-                        :trigger="['click']"
-                        placement="bottomLeft"
-                        :visible="indicatorDropdownVisible"
-                        :get-popup-container="chartToolbarGetPopupContainer"
-                        @visibleChange="onIndicatorDropdownVisibleChange"
-                        :overlay-class-name="isDarkTheme ? 'ide-indicator-multiselect-dropdown ide-indicator-multiselect-dropdown--dark' : 'ide-indicator-multiselect-dropdown'"
-                      >
+                      <a-tooltip :title="$t('indicatorIde.chartPickHint')">
                         <a-button
                           size="small"
-                          class="ide-toolbar-select ide-toolbar-select--indicator ide-indicator-multiselect-trigger"
+                          class="ide-toolbar-select ide-toolbar-select--indicator ide-indicator-library-trigger"
                           :loading="loadingIndicators"
+                          @click="openIndicatorLibrary"
                         >
+                          <a-icon type="appstore" />
                           <span class="ide-indicator-trigger-text">{{ indicatorToolbarSummary }}</span>
-                          <a-icon type="down" />
                         </a-button>
-                        <div slot="overlay" class="ide-indicator-overlay" @mousedown.stop @click.stop>
-                          <div class="ide-indicator-overlay-hint">{{ $t('indicatorIde.chartPickHint') }}</div>
-                          <button v-if="marketplaceEnabled" type="button" class="ide-indicator-market-entry" @click="openIndicatorMarketPicker">
-                            <span><a-icon type="shop" /> {{ $t('indicatorIde.marketPicker.open') }}</span>
-                            <a-icon type="right" />
-                          </button>
-                          <a-spin v-if="loadingIndicators" size="small" style="padding: 12px;" />
-                          <div v-else-if="!indicators.length" class="ide-indicator-overlay-empty">{{ $t('indicatorIde.noIndicatorsYet') }}</div>
-                          <div v-else class="ide-indicator-overlay-list">
-                            <div
-                              v-for="ind in indicators"
-                              :key="'ind-row-' + ind.id"
-                              class="ide-indicator-row"
-                            >
-                              <a-checkbox
-                                :checked="(chartVisibleIndicatorIds || []).some(x => Number(x) === Number(ind.id))"
-                                @change="e => onChartIndicatorCheckChange(ind.id, e.target.checked)"
-                              />
-                              <span
-                                class="ide-indicator-name"
-                                :class="{ active: Number(selectedIndicatorId) === Number(ind.id) }"
-                                @click="selectEditorIndicator(ind.id)"
-                              >{{ indicatorDisplayName(ind) }}</span>
-                              <a-tag
-                                v-if="Number(ind.is_buy) === 1"
-                                color="purple"
-                                class="ide-indicator-purchased-tag"
-                              >{{ $t('indicatorIde.purchasedBadge') }}</a-tag>
-                            </div>
-                          </div>
-                        </div>
-                      </a-dropdown>
+                      </a-tooltip>
                     </div>
                   </div>
                 </div>
@@ -679,6 +641,56 @@
     />
 
     <a-modal
+      :title="$t('indicatorIde.toolbar.indicator')"
+      :visible="indicatorLibraryVisible"
+      :width="560"
+      :footer="null"
+      :get-container="ideModalGetContainer"
+      class="ide-indicator-library-modal"
+      @cancel="indicatorLibraryVisible = false"
+    >
+      <a-input-search
+        v-model="indicatorLibraryQuery"
+        class="ide-indicator-library-search"
+        :placeholder="$t('indicatorIde.chartPickHint')"
+        allow-clear
+      />
+      <button
+        v-if="marketplaceEnabled"
+        type="button"
+        class="ide-indicator-market-entry"
+        @click="openIndicatorMarketPicker"
+      >
+        <span><a-icon type="shop" /> {{ $t('indicatorIde.marketPicker.open') }}</span>
+        <a-icon type="right" />
+      </button>
+      <a-spin v-if="loadingIndicators" size="small" style="padding: 24px;" />
+      <a-empty v-else-if="!indicatorLibraryOptions.length" :description="$t('indicatorIde.noIndicatorsYet')" />
+      <div v-else class="ide-indicator-library-list">
+        <label
+          v-for="ind in indicatorLibraryOptions"
+          :key="'ind-library-' + ind.id"
+          class="ide-indicator-library-row"
+        >
+          <a-checkbox
+            :checked="(chartVisibleIndicatorIds || []).some(x => Number(x) === Number(ind.id))"
+            @change="e => onChartIndicatorCheckChange(ind.id, e.target.checked)"
+          />
+          <span
+            class="ide-indicator-name"
+            :class="{ active: Number(selectedIndicatorId) === Number(ind.id) }"
+            @click="selectEditorIndicator(ind.id)"
+          >{{ indicatorDisplayName(ind) }}</span>
+          <a-tag
+            v-if="Number(ind.is_buy) === 1"
+            color="purple"
+            class="ide-indicator-purchased-tag"
+          >{{ $t('indicatorIde.purchasedBadge') }}</a-tag>
+        </label>
+      </div>
+    </a-modal>
+
+    <a-modal
       :title="$t('indicatorIde.signalAlert.title')"
       :visible="signalAlertModalVisible"
       :width="880"
@@ -692,9 +704,17 @@
         <a-tabs v-model="signalAlertActiveTab" class="ide-signal-alert-tabs">
           <a-tab-pane key="create" :tab="signalAlertEditingId ? $t('indicatorIde.signalAlert.editCondition') : $t('indicatorIde.signalAlert.setupCondition')">
             <div class="signal-alert-current-card">
-              <div>
-                <span>{{ $t('indicatorIde.signalAlert.currentIndicator') }}</span>
-                <strong>{{ selectedIndicatorDisplayName }}</strong>
+              <div class="signal-alert-indicator-field">
+                <label>{{ $t('indicatorIde.signalAlert.currentIndicator') }}</label>
+                <a-select
+                  v-model="signalAlertForm.indicatorId"
+                  size="small"
+                  class="signal-alert-indicator-select"
+                  :get-popup-container="ideModalGetContainer"
+                  @change="onSignalAlertIndicatorChange"
+                >
+                  <a-select-option v-for="opt in signalAlertIndicatorOptions" :key="opt.id" :value="opt.id">{{ opt.name }}</a-select-option>
+                </a-select>
               </div>
               <a-tag
                 class="signal-alert-source-tag"
@@ -1152,6 +1172,8 @@ export default {
       // runs on, and a second renderer that cannot run Pine would show a
       // different picture for the same script.
       indicatorDropdownVisible: false,
+      indicatorLibraryVisible: false,
+      indicatorLibraryQuery: '',
       indicatorMarketVisible: false,
       indicatorsLoadedAt: 0,
       editorFullscreen: false,
@@ -1230,6 +1252,7 @@ export default {
       },
       signalAlertTimeframes: ['1m', '5m', '15m', '30m', '1H', '4H', '1D', '1W'],
       signalAlertForm: {
+        indicatorId: 0,
         watchlistKey: 'Crypto:BTC/USDT',
         market: 'Crypto',
         symbol: 'BTC/USDT',
@@ -1456,8 +1479,24 @@ export default {
       }
       return list
     },
+    signalAlertIndicator () {
+      const id = Number((this.signalAlertForm && this.signalAlertForm.indicatorId)) || Number(this.selectedIndicatorId) || 0
+      return this.indicators.find(ind => Number(ind.id) === id) || this.selectedIndicatorObj || null
+    },
+    signalAlertIndicatorOptions () {
+      const visible = this.chartVisibleIndicatorIds || []
+      const list = (this.indicators || []).filter(ind => visible.some(raw => Number(raw) === Number(ind.id)))
+      const chosen = this.signalAlertIndicator
+      if (chosen && !list.some(ind => Number(ind.id) === Number(chosen.id))) list.unshift(chosen)
+      return list.map(ind => ({ id: Number(ind.id), name: this.indicatorDisplayName(ind) }))
+    },
+    signalAlertIndicatorCode () {
+      const ind = this.signalAlertIndicator
+      if (!ind) return ''
+      return this.getIndicatorExecutableCode(ind, undefined)
+    },
     signalAlertSignalOptions () {
-      return this.extractSignalAlertOptions(this.selectedIndicatorParamCode || this.currentCode)
+      return this.extractSignalAlertOptions(this.signalAlertIndicatorCode || this.currentCode)
     },
     chartIndicatorToggleDisabled () {
       if (this.chartIndicatorRunning) return false
@@ -1468,6 +1507,12 @@ export default {
         const code = this.getIndicatorExecutableCode(ind)
         return code && String(code).trim()
       })
+    },
+    indicatorLibraryOptions () {
+      const query = String(this.indicatorLibraryQuery || '').trim().toLowerCase()
+      const rows = this.indicators || []
+      if (!query) return rows
+      return rows.filter(ind => String(this.indicatorDisplayName(ind) || '').toLowerCase().includes(query) || String(ind.id) === query)
     },
     indicatorToolbarSummary () {
       const ed = this.selectedIndicatorObj
@@ -2594,6 +2639,7 @@ export default {
       const defaults = this.signalAlertNotificationDefaults || {}
       this.signalAlertEditingId = null
       this.signalAlertForm = {
+        indicatorId: Number(this.selectedIndicatorId) || Number((this.chartVisibleIndicatorIds || [])[0]) || 0,
         watchlistKey: `${this.market}:${this.symbol}`,
         market: this.market,
         symbol: this.symbol,
@@ -2614,8 +2660,13 @@ export default {
         this.signalAlertForm.signalKeys = [opts[1].key]
       }
     },
+    onSignalAlertIndicatorChange () {
+      this.signalAlertForm.signalKeys = ['any']
+      const opts = this.signalAlertSignalOptions
+      if (opts && opts.length === 2 && opts[1].key !== 'any') this.signalAlertForm.signalKeys = [opts[1].key]
+    },
     async openSignalAlertModal () {
-      if (!this.selectedIndicatorId) {
+      if (!this.signalAlertIndicatorOptions.length) {
         this.$message.warning(this.$t('indicatorIde.signalAlert.selectIndicatorWarning'))
         return
       }
@@ -2639,10 +2690,13 @@ export default {
     },
     buildSignalAlertPayload () {
       const form = this.signalAlertForm || {}
-      const params = this.currentIndicatorParamValues || {}
+      const ind = this.signalAlertIndicator
+      const params = ind
+        ? this.resolveIndicatorRuntimeParams(ind, this.getIndicatorExecutableCode(ind, undefined))
+        : (this.currentIndicatorParamValues || {})
       return {
-        indicator_id: this.selectedIndicatorId,
-        indicator_name: this.selectedIndicatorDisplayName,
+        indicator_id: ind ? Number(ind.id) : this.selectedIndicatorId,
+        indicator_name: ind ? this.indicatorDisplayName(ind) : this.selectedIndicatorDisplayName,
         market: form.market || this.market,
         symbol: form.symbol || this.symbol,
         symbol_name: form.symbolName || '',
@@ -2727,6 +2781,7 @@ export default {
       const defaults = this.signalAlertNotificationDefaults || {}
       const targets = task.targets || {}
       this.signalAlertForm = {
+        indicatorId: Number(task.indicator_id) || Number(this.selectedIndicatorId) || 0,
         watchlistKey: key,
         market: task.market || this.market,
         symbol: task.symbol || this.symbol,
@@ -2891,9 +2946,18 @@ export default {
       this.chartIndicatorRunning = !this.chartIndicatorRunning
       this.syncSelectedIndicatorToChart()
     },
+    openIndicatorLibrary () {
+      this.indicatorLibraryQuery = ''
+      this.indicatorLibraryVisible = true
+      this.refreshIndicatorLibrary()
+    },
     onIndicatorDropdownVisibleChange (visible) {
       this.indicatorDropdownVisible = visible
-      if (!visible || this.loadingIndicators) return
+      if (!visible) return
+      this.refreshIndicatorLibrary()
+    },
+    refreshIndicatorLibrary () {
+      if (this.loadingIndicators) return
       if (!this.indicators.length) {
         this.loadIndicators()
         return
@@ -4780,6 +4844,22 @@ export default {
   border-radius: 10px;
   background: #fff;
 }
+.signal-alert-indicator-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 240px;
+
+  label {
+    color: #7a8596;
+    font-size: 12px;
+  }
+}
+
+.signal-alert-indicator-select {
+  width: 280px;
+}
+
 .signal-alert-current-card {
   display: flex;
   align-items: center;
@@ -8776,6 +8856,32 @@ body.dark .ide-param-modal-wrap {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   }
 }
+.ide-indicator-library-search {
+  margin-bottom: 10px;
+}
+
+.ide-indicator-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  padding: 4px 2px;
+  overflow-y: auto;
+}
+
+.ide-indicator-library-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(24, 144, 255, 0.08);
+  }
+}
+
 .ide-indicator-overlay {
   min-width: 260px;
   max-width: 420px;
