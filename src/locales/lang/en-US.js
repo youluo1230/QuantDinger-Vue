@@ -5859,6 +5859,7 @@ const locale = {
   "indicatorIde.toolbar.timeframe": "Timeframe",
   "indicatorIde.toolbar.indicator": "Indicator",
   "indicatorIde.indicatorPickPlaceholder": "No indicators on chart",
+  "indicatorIde.libraryHint": "Search a saved indicator; check one to overlay it on the chart, click its name to edit it alone",
   "indicatorIde.chartPickHint": "Click name: edit and show alone on chart; check other rows to overlay more indicators",
   "indicatorIde.marketPicker.open": "Add from Market",
   "indicatorIde.marketPicker.title": "Add indicators",

@@ -3610,6 +3610,7 @@ const locale = {
   "indicatorIde.capital": "资金",
   "indicatorIde.chartFocusDesc": "进入图表工作区查看成交 K 线、信号 K 线、指标叠加和市场上下文，不需要离开本次回测。",
   "indicatorIde.chartFocusTitle": "在 K 线图上检查入场和出场",
+  "indicatorIde.libraryHint": "搜索已保存的指标；勾选叠加到 K 线，点击名称单独编辑",
   "indicatorIde.chartPickHint": "点击名称：编辑并单独显示在 K 线；勾选其他行前复选框：叠加多个指标",
   "indicatorIde.chartWindow": "图表窗口",
   "indicatorIde.clearChartSignals": "清除回测标记",

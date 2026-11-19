@@ -652,7 +652,7 @@
       <a-input-search
         v-model="indicatorLibraryQuery"
         class="ide-indicator-library-search"
-        :placeholder="$t('indicatorIde.chartPickHint')"
+        :placeholder="$t('indicatorIde.libraryHint')"
         allow-clear
       />
       <button
