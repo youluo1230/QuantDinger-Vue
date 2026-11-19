@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { decodeSymbolTicker, encodeSymbolTicker, isEncodedSymbolTicker } from '../../src/charting/symbolTicker.js'
+import { canonicalMarketName, decodeSymbolTicker, encodeSymbolTicker, isEncodedSymbolTicker } from '../../src/charting/symbolTicker.js'
 
 test('an instrument is encoded with its venue', () => {
   assert.equal(
@@ -62,4 +62,12 @@ test('the pre-swap order is still decoded', () => {
 
 test('a ticker without a market is not decodable', () => {
   assert.equal(decodeSymbolTicker('QD:BTC/USDT::swap:binance'), null)
+})
+
+test('market labels are canonicalised without inventing new ones', () => {
+  assert.equal(canonicalMarketName('crypto'), 'Crypto')
+  assert.equal(canonicalMarketName(' usstock '), 'USStock')
+  assert.equal(canonicalMarketName(''), 'Crypto')
+  // Not in the known list: leave it alone so the backend can report it.
+  assert.equal(canonicalMarketName('MOEX'), 'MOEX')
 })

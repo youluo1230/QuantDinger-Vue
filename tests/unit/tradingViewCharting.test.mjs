@@ -47,6 +47,14 @@ test('symbol metadata follows the market instead of assuming crypto', () => {
   assert.match(datafeed, /Crypto: \{ type: 'crypto', session: '24x7'/)
 })
 
+test('the candles request carries a market label the backend accepts', () => {
+  // Archives and hand-written tickers drift to lower case; the endpoint only
+  // takes `Crypto`, so the label is canonicalised once, before any request.
+  assert.match(datafeed, /market: canonicalMarket\(symbolInfo\.market\)/)
+  assert.match(datafeed, /market: canonicalMarket\(symbolInfo\.market\),[\s\S]{0,80}keyword,/)
+  assert.match(datafeed, /export function canonicalMarket/)
+})
+
 test('realtime forwards the forming bar instead of swallowing it', () => {
   // The library's contract is "call the callback every time you want to update
   // the most recent bar", so the old early-return on a still-forming bar made a

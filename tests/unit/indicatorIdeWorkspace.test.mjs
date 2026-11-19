@@ -75,7 +75,7 @@ test('loading a pane restores the venue the ticker carries', () => {
     { symbol: 'QD:SOL/USDT:crypto:spot:okx', timeframe: '4H', chartType: 'line', indicators: [{ id: '5' }, { id: 0 }] },
     { id: 'pane-1', market: 'USStock', symbol: 'AAPL', exchangeId: 'nasdaq', marketType: 'spot', instrumentId: 'AAPL', timeframe: '1D', candleType: 'candle_solid' }
   )
-  assert.equal(pane.market, 'crypto')
+  assert.equal(pane.market, 'Crypto')
   assert.equal(pane.symbol, 'SOL/USDT')
   assert.equal(pane.exchangeId, 'okx')
   assert.equal(pane.marketType, 'spot')
@@ -83,6 +83,14 @@ test('loading a pane restores the venue the ticker carries', () => {
   assert.equal(pane.timeframe, '4H')
   assert.equal(pane.candleType, 'line')
   assert.deepEqual(pane.visibleIndicatorIds, [5])
+})
+
+test('a lower-case market in a ticker comes back canonical', () => {
+  // The candles endpoint only accepts the documented spelling, so an archive
+  // written by hand (or by an older client) must not reach the request as
+  // "crypto" and 400.
+  const pane = paneFromArchive({ symbol: 'QD:ETH/USDT:crypto:spot:binance', timeframe: '1H' })
+  assert.equal(pane.market, 'Crypto')
 })
 
 test('a legacy pane without a symbol keeps whatever instrument is on screen', () => {

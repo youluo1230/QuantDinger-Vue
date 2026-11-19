@@ -1,4 +1,4 @@
-import { decodeSymbolTicker, encodeSymbolTicker } from '../../charting/symbolTicker.js'
+import { canonicalMarketName, decodeSymbolTicker, encodeSymbolTicker } from '../../charting/symbolTicker.js'
 
 /**
  * The workspace the IDE archives on the backend.
@@ -58,7 +58,7 @@ export function serialisePane (pane, indicatorInfo = () => ({})) {
     })
   }
   const ticker = encodeSymbolTicker({
-    market: source.market,
+    market: canonicalMarketName(source.market),
     marketType: source.marketType,
     exchangeId: source.exchangeId,
     instrumentId: source.instrumentId,
@@ -104,7 +104,7 @@ export function paneFromArchive (entry, current = {}) {
     : []
   return {
     ...base,
-    market: decoded ? decoded.market : base.market,
+    market: canonicalMarketName(decoded ? decoded.market : base.market),
     symbol: decoded ? decoded.instrumentId : String(row.symbol || '') || base.symbol,
     exchangeId: decoded ? decoded.exchangeId : base.exchangeId,
     marketType: decoded ? decoded.marketType : base.marketType,

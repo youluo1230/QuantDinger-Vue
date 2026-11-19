@@ -8,7 +8,7 @@
 
 import request from '@/utils/request'
 import ExchangeKlineWs, { getExchangeInterval } from '@/utils/exchangeWs'
-import { decodeSymbolTicker, encodeSymbolTicker } from './symbolTicker'
+import { canonicalMarketName, decodeSymbolTicker, encodeSymbolTicker } from './symbolTicker'
 
 /**
  * Library resolution -> the timeframe name the backend accepts.
@@ -82,8 +82,22 @@ const MARKET_PROFILES = {
   Futures: { type: 'futures', session: '24x7', timezone: 'America/Chicago', pricescale: 10000 }
 }
 
+/**
+ * The backend's market names are capitalised (`Crypto`, `USStock`); archives
+ * and hand-written tickers drift to lower case often enough that every request
+ * would 400 on "Unsupported market 'crypto'". Normalise before the value leaves
+ * the datafeed, and keep unknown labels as-is so a new market still reaches the
+ * backend and surfaces its own error.
+ */
+export function canonicalMarket (value) {
+  const raw = String(value || '').trim()
+  if (!raw) return 'Crypto'
+  const match = Object.keys(MARKET_PROFILES).find(name => name.toLowerCase() === raw.toLowerCase())
+  return match || canonicalMarketName(raw)
+}
+
 export function buildSymbolInfo ({ symbol, market, exchangeId, marketType, instrumentId, timeframe, ticker, instrument }) {
-  const marketLabel = String(market || 'Crypto').trim()
+  const marketLabel = canonicalMarket(market)
   // The human symbol is what the backend's `/api/market-data/candles` wants and
   // what the legend shows; the ticker is the venue-scoped identity the library
   // echoes back. They differ as soon as a search result carries a venue.
@@ -339,7 +353,7 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
   }
 
   const requestParams = (extra) => ({
-    market: symbolInfo.market,
+    market: canonicalMarket(symbolInfo.market),
     // `/api/market-data/candles` resolves an instrument from the human symbol
     // plus the venue fields; the encoded ticker means nothing to it.
     symbol: symbolInfo.instrument || symbolInfo.ticker,
@@ -442,7 +456,7 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
           url: '/api/market/symbols/search',
           method: 'get',
           params: {
-            market: symbolInfo.market,
+            market: canonicalMarket(symbolInfo.market),
             keyword,
             limit: 30
           },

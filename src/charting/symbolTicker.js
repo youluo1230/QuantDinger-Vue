@@ -24,8 +24,23 @@
 const TICKER_PREFIX = 'QD'
 const SEPARATOR = ':'
 
-/** Market labels this app encodes. Used only to tell the two orders apart. */
+/** Market labels this app encodes. Used to tell the two orders apart. */
 const KNOWN_MARKETS = ['Crypto', 'USStock', 'CNStock', 'HKStock', 'Forex', 'Futures']
+
+/**
+ * Canonical spelling of a market label.
+ *
+ * Archives and hand-written tickers drift to lower case (`crypto`), while the
+ * candles endpoint only accepts the documented spelling. Normalise here so
+ * both the encoded ticker and the request share one label; unknown labels are
+ * passed through untouched so a new market still reaches the backend.
+ */
+export function canonicalMarketName (value) {
+  const raw = part(value)
+  if (!raw) return 'Crypto'
+  const match = KNOWN_MARKETS.find(name => name.toLowerCase() === raw.toLowerCase())
+  return match || raw
+}
 
 function part (value) {
   return String(value == null ? '' : value).trim()
