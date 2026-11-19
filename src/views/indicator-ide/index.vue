@@ -503,7 +503,9 @@
                         </div>
                       </a-dropdown>
                     </div>
-                    <div class="chart-panel-inner">
+                  </div>
+                </div>
+                <div class="chart-panel-inner">
                   <div class="ide-chart-layout" :class="`ide-chart-layout--${chartLayoutMode}`">
                     <div
                       v-for="(pane, paneIndex) in visibleChartPanes"
@@ -539,7 +541,7 @@
                           :timeframe="pane.timeframe"
                           :theme="chartTheme"
                           :candle-type="pane.candleType"
-              :compact-header="chartLayoutMode === 4"
+                          :compact-header="chartLayoutMode === 4"
                           :indicators="tvPaneIndicators(pane)"
                           :quick-trade-positions="pane.id === activeChartPaneId ? quickTradeChartPositions : []"
                           @indicator-error="handleTvIndicatorError"
