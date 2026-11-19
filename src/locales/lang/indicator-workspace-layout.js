@@ -20,7 +20,9 @@ const en = {
   'indicatorIde.workspace.saveFailed': 'Could not save the workspace',
   'indicatorIde.workspace.deleted': 'Workspace deleted',
   'indicatorIde.workspace.deleteFailed': 'Could not delete the workspace',
-  'indicatorIde.workspace.migratedName': 'Restored workspace'
+  'indicatorIde.workspace.migratedName': 'Restored workspace',
+  'indicatorIde.toolbar.hide': 'Hide chart toolbar',
+  'indicatorIde.toolbar.show': 'Show chart toolbar'
 }
 
 export default {
@@ -47,7 +49,9 @@ export default {
     'indicatorIde.workspace.saveFailed': '工作区保存失败',
     'indicatorIde.workspace.deleted': '工作区已删除',
     'indicatorIde.workspace.deleteFailed': '工作区删除失败',
-    'indicatorIde.workspace.migratedName': '恢复的工作区'
+    'indicatorIde.workspace.migratedName': '恢复的工作区',
+    'indicatorIde.toolbar.hide': '隐藏图表工具栏',
+    'indicatorIde.toolbar.show': '显示图表工具栏'
   },
   'zh-TW': {
     'indicatorIde.resizeWorkspace': '調整程式碼區與 K 線區寬度',

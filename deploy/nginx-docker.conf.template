@@ -51,7 +51,14 @@ server {
     }
 
     # Vue Router uses hash routes, so only the site root needs the app shell.
+    # The shell must be revalidated, never heuristically cached: its script
+    # names are the only pointer to the build the browser should run.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
     location = / {
+        add_header Cache-Control "no-cache";
         try_files /index.html =404;
     }
 

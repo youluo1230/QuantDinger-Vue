@@ -349,7 +349,16 @@
           >
             <div class="ide-chart-fs-row">
               <div ref="chartPanel" class="chart-panel">
-                <div class="chart-panel-toolbar">
+                <button
+                  v-show="toolbarCollapsed"
+                  type="button"
+                  class="chart-panel-toolbar-reveal"
+                  :aria-label="$t('indicatorIde.toolbar.show')"
+                  @click="expandChartToolbar"
+                >
+                  <a-icon type="down" />
+                </button>
+                <div v-show="!toolbarCollapsed" class="chart-panel-toolbar">
                   <div class="chart-panel-toolbar-top">
                     <span class="chart-panel-toolbar-title">{{ $t('indicatorIde.chartWindow') }}</span>
                     <div class="chart-panel-toolbar-top-actions">
@@ -449,6 +458,17 @@
                           <a-menu-item key="delete" :disabled="!workspaceTemplateId">{{ $t('indicatorIde.workspace.delete') }}</a-menu-item>
                         </a-menu>
                       </a-dropdown>
+
+                      <a-tooltip :title="$t('indicatorIde.toolbar.hide')">
+                        <a-button
+                          size="small"
+                          class="chart-panel-action-btn chart-panel-toolbar-collapse"
+                          :aria-label="$t('indicatorIde.toolbar.hide')"
+                          @click="collapseChartToolbar"
+                        >
+                          <a-icon type="up" />
+                        </a-button>
+                      </a-tooltip>
                     </div>
                   </div>
                   <div class="chart-panel-toolbar-controls">
@@ -1142,6 +1162,9 @@ export default {
 
       codeDrawerVisible: true,
       codePanelExpanded: true,
+      // The chart is the point of the page: the toolbar can step aside and give
+      // its height back to the candles without hiding the actions entirely.
+      toolbarCollapsed: false,
 
       market: 'Crypto',
       symbol: 'BTC/USDT',
@@ -2980,6 +3003,18 @@ export default {
         const chart = this.getChartRef()
         if (chart && typeof chart.resize === 'function') chart.resize()
       })
+    },
+    collapseChartToolbar () {
+      this.toolbarCollapsed = true
+      this.$nextTick(() => this.resizeActiveChart())
+    },
+    expandChartToolbar () {
+      this.toolbarCollapsed = false
+      this.$nextTick(() => this.resizeActiveChart())
+    },
+    resizeActiveChart () {
+      const chart = this.getChartRef()
+      if (chart && typeof chart.resize === 'function') chart.resize()
     },
 
     // ===== Save =====
@@ -6679,6 +6714,28 @@ body.dark .ide-signal-alert-modal-wrap {
   display: flex;
   flex-direction: column;
   background: #fff;
+  .chart-panel-toolbar-reveal {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    z-index: 30;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.88);
+    color: #595959;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+    &:hover {
+      color: #1890ff;
+      border-color: #1890ff;
+    }
+  }
   .chart-panel-toolbar {
     flex-shrink: 0;
     display: flex;
@@ -7554,6 +7611,11 @@ body.dark .ide-signal-alert-modal-wrap {
     .chart-panel-toolbar {
       background: #1a1a1a;
       border-bottom-color: #303030;
+    }
+    .chart-panel-toolbar-reveal {
+      color: rgba(255, 255, 255, 0.72);
+      background: rgba(26, 26, 26, 0.9);
+      border-color: #3a3a3a;
     }
     .chart-panel-toolbar-title { color: rgba(255, 255, 255, 0.65); }
     .chart-panel-toolbar-controls .ide-toolbar-group {

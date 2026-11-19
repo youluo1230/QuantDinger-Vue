@@ -17,6 +17,15 @@ const indicatorIdeSource = fs.readFileSync(indicatorIdePath, 'utf8')
 const klineChartSource = fs.readFileSync(klineChartPath, 'utf8')
 const strategyIdeSource = fs.readFileSync(strategyIdePath, 'utf8')
 
+test('the chart toolbar can step aside so the candles keep the height', () => {
+  assert.match(indicatorIdeSource, /v-show="toolbarCollapsed"/)
+  assert.match(indicatorIdeSource, /class="chart-panel-toolbar-reveal"/)
+  assert.match(indicatorIdeSource, /:aria-label="\$t\('indicatorIde\.toolbar\.show'\)"/)
+  assert.match(indicatorIdeSource, /@click="expandChartToolbar"/)
+  assert.match(indicatorIdeSource, /@click="collapseChartToolbar"/)
+  assert.match(indicatorIdeSource, /resizeActiveChart \(\)/)
+})
+
 test('editor leading code icon is an accessible collapse button using the existing toggle', () => {
   const button = indicatorIdeSource.match(/<button\s+[^>]*class="code-panel-icon-toggle"[\s\S]*?<\/button>/)?.[0]
   assert.ok(button)
