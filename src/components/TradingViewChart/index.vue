@@ -1226,7 +1226,9 @@ export default {
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 420px;
+  // The pane owns the height. A floor here made a four-pane layout taller than
+  // its grid cells at common laptop sizes, and the chart was clipped mid-candle.
+  min-height: 0;
 
   &__host {
     position: absolute;
