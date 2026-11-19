@@ -47,6 +47,15 @@ test('symbol metadata follows the market instead of assuming crypto', () => {
   assert.match(datafeed, /Crypto: \{ type: 'crypto', session: '24x7'/)
 })
 
+test('the candles request carries an instrument id the cache is keyed by', () => {
+  // An empty instrument id made every mount open a fresh stream key, so the
+  // chart relearned a handful of bars instead of the stored series. The human
+  // symbol is the identity a search result already carries.
+  const requestBlock = datafeed.slice(datafeed.indexOf('const requestParams'))
+  const body = requestBlock.slice(0, requestBlock.indexOf('})'))
+  assert.match(body, /instrument_id: symbolInfo\.instrumentId \|\| symbolInfo\.instrument/)
+})
+
 test('the candles request carries a market label the backend accepts', () => {
   // Archives and hand-written tickers drift to lower case; the endpoint only
   // takes `Crypto`, so the label is canonicalised once, before any request.

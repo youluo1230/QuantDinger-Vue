@@ -359,7 +359,10 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     symbol: symbolInfo.instrument || symbolInfo.ticker,
     exchange_id: symbolInfo.exchangeId || undefined,
     market_type: symbolInfo.marketType || undefined,
-    instrument_id: symbolInfo.instrumentId || undefined,
+    // The candle cache is keyed by the instrument id, so an empty one starts a
+    // fresh stream every time and the chart relearns a handful of bars. Fall
+    // back to the human symbol, which is what a search result carries anyway.
+    instrument_id: symbolInfo.instrumentId || symbolInfo.instrument || undefined,
     ...extra
   })
 
