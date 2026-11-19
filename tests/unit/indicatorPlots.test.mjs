@@ -481,6 +481,9 @@ describe('buildCustomIndicator', () => {
       candleTimes: times.slice(0, 2)
     })
     assert.equal(study.metainfo.plots.length, 2)
+    // The pane removes a study by the id it saved, so the descriptor has to
+    // carry the id it was built for.
+    assert.equal(study.indicatorId, 7)
     const instance = new study.constructor()
     assert.deepEqual(instance.main(ctxAt(times[0])), [5, 3])
     assert.deepEqual(instance.main(ctxAt(times[1])), [6, 4])

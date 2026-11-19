@@ -946,6 +946,7 @@ export function buildCustomIndicator ({ indicatorId, name, series, key, candleTi
 
   return {
     key,
+    indicatorId: Number(indicatorId) || 0,
     name: label,
     metainfo,
     // The library applies `new` to this function, so it must stay a function

@@ -597,6 +597,8 @@ export default {
       for (const record of [...this.studyRecords]) {
         if (wanted.has(record.name)) continue
         try {
+          this._selfRemovedEntities = this._selfRemovedEntities || new Set()
+          this._selfRemovedEntities.add(record.entityId)
           chart.removeEntity(record.entityId)
         } catch (err) {
           if (process.env.NODE_ENV !== 'production') {
@@ -694,6 +696,7 @@ export default {
         if (typeof widget.subscribe === 'function') {
           widget.subscribe('study_properties_changed', this.onStudyPropertiesChanged)
         }
+        widget.subscribe?.('study_event', this.onLibraryStudyEvent)
         const offInterval = chart.onIntervalChanged?.()
         offInterval?.subscribe?.(null, (interval) => this.onLibraryIntervalChanged(interval))
         const offSymbol = chart.onSymbolChanged?.()
@@ -706,6 +709,7 @@ export default {
         this.chartUnsubscribes.push(() => {
           try {
             widget.unsubscribe?.('study_properties_changed', this.onStudyPropertiesChanged)
+            widget.unsubscribe?.('study_event', this.onLibraryStudyEvent)
             offInterval?.unsubscribe?.(null)
             offSymbol?.unsubscribe?.(null)
             offType?.unsubscribe?.(null)
@@ -729,6 +733,23 @@ export default {
      * user change. Comparing series instead of names keeps that write from
      * echoing back as a change (several names share one series).
      */
+    /**
+     * The legend's own delete button, as an edit to the pane.
+     *
+     * Removals this component starts itself are already reflected in
+     * `studyRecords`; only a study the user removed through the library's
+     * legend needs to travel back up to the pane that asked for it.
+     */
+    onLibraryStudyEvent (entityId, eventType) {
+      if (eventType !== 'remove' || !entityId) return
+      this._selfRemovedEntities = this._selfRemovedEntities || new Set()
+      if (this._selfRemovedEntities.delete(entityId)) return
+      const record = this.studyRecords.find(item => item.entityId === entityId)
+      if (!record) return
+      this.studyRecords = this.studyRecords.filter(item => item !== record)
+      this.liveStudies = this.studyRecords.map(item => item.descriptor)
+      this.$emit('study-removed', { indicatorId: record.indicatorId, name: record.name })
+    },
     onLibraryChartTypeChanged (seriesType) {
       if (Number(seriesType) === seriesTypeFor(this.candleType)) return
       const chartType = chartTypeForSeriesType(seriesType)
