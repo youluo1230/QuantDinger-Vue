@@ -423,6 +423,20 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     return rows
   }
 
+  /**
+   * The dialog can arrive with the venue ticker already in the box (BTCUSDT),
+   * while the catalogue is indexed by the pair (BTC/USDT). Ask for the base
+   * asset as a second chance before reporting an empty result.
+   */
+  const searchKeywords = (keyword) => {
+    const text = String(keyword || '').trim()
+    if (!text) return []
+    const candidates = [text]
+    const match = /^([A-Za-z0-9]{2,})(USDT|USDC|USD|EUR|BTC|ETH)$/.exec(text)
+    if (match && match[1] !== text) candidates.push(match[1])
+    return candidates
+  }
+
   return {
     onReady (callback) {
       // The library tolerates an async answer here and needs it: reporting
@@ -507,6 +521,12 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
         let rows = keyword
           ? await fetchSymbolRows('/api/market/symbols/search', { market, keyword, limit: 30 }, venue, kind)
           : await fetchSymbolRows('/api/market/symbols/hot', { market, limit: 30 }, venue, kind)
+        if (keyword && !rows.length) {
+          for (const candidate of searchKeywords(keyword).slice(1)) {
+            rows = await fetchSymbolRows('/api/market/symbols/search', { market, keyword: candidate, limit: 30 }, venue, kind)
+            if (rows.length) break
+          }
+        }
         if (!keyword && !rows.length) {
           const base = String(symbolInfo.instrument || '').split('/')[0].trim()
           if (base) {

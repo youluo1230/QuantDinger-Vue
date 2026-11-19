@@ -317,6 +317,13 @@ test('the symbol dialog can browse the market before typing', () => {
   assert.match(datafeed, /if \(kind\) payload\.market_type = kind/)
 })
 
+test('a venue ticker in the search box still finds the pair', () => {
+  const datafeed = read('src/charting/datafeed.js')
+  assert.match(datafeed, /const searchKeywords = \(keyword\) => \{/)
+  assert.match(datafeed, /\/\^\(\[A-Za-z0-9\]\{2,\}\)\(USDT\|USDC\|USD\|EUR\|BTC\|ETH\)\$\//)
+  assert.match(datafeed, /for \(const candidate of searchKeywords\(keyword\)\.slice\(1\)\)/)
+})
+
 test('one registry promise feeds both the getter and the drawing step', () => {
   // If the two resolved separately, `createStudy` could run before the library
   // finished filling its registry and the chart would report an unknown study.
