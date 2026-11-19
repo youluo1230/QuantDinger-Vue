@@ -167,6 +167,15 @@ export default {
       // so this decides whether a set change can be applied in place or needs
       // the rebuild fallback.
       registeredStudyNames: [],
+      // The promise the library's `custom_indicators_getter` received. The
+      // getter and `drawStudies` must resolve the same list: if they resolved
+      // separately, a study could be created before the registry it was drawn
+      // from was pushed into the library, which surfaces as "unknown study name".
+      registryPromise: null,
+      registrySignature: '',
+      // A rebuild already retried after a study could not be created. Guards
+      // against a registry that never settles rebuilding in a loop.
+      studyRetry: false,
       // Teardown callbacks for the chart subscriptions (interval, symbol).
       chartUnsubscribes: [],
       // Labels this component drew on the chart, kept so a redraw can remove the
@@ -495,8 +504,13 @@ export default {
         this.registeredStudyNames = []
         return
       }
-      const { indicators, failures } = await this.resolveStudies()
-      this.reportFailures(failures)
+      // The getter and this method share one promise (see `loadIndicators`),
+      // and the registry is filled from the library's own continuation. A turn
+      // of the event loop separates the two: without it `createStudy` can beat
+      // the registration it depends on and the chart reports an unknown study.
+      const indicators = await this.loadIndicators()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      if (!indicators.length) return
       // The names the getter just registered: a later set change can use these
       // in place, and only a name outside this list forces a rebuild.
       this.registeredStudyNames = indicators.map(study => study.name)
@@ -510,6 +524,7 @@ export default {
           // eslint-disable-next-line no-await-in-loop
           const entityId = await chart.createStudy(study.name, study.metainfo.overlay === true, false, this.studyInputValues(study))
           if (entityId) {
+            this.studyRetry = false
             records.push({
               entityId,
               indicatorId: Number(study.indicatorId || 0),
@@ -518,8 +533,13 @@ export default {
               descriptor: study,
               params: { ...(study.params || {}) }
             })
+          } else {
+            // The library only refuses a name it does not hold. One rebuild
+            // re-reads the registry; retrying on its own would loop.
+            this.retryStudySet()
           }
         } catch (err) {
+          this.retryStudySet()
           if (process.env.NODE_ENV !== 'production') {
             console.debug('createStudy failed', study.name, err)
           }
@@ -528,6 +548,22 @@ export default {
       this.studyRecords = records
       this.liveStudies = records.map(record => record.descriptor)
       this.drawStudyDrawings(this.liveStudies)
+    },
+    /**
+     * Re-read the registry once when a study could not be created.
+     *
+     * The library reports "unknown study name" itself when `createStudy` gets a
+     * name its registry does not hold. The causes are a registry that had not
+     * settled and, rarely, a stale widget; a single rebuild fixes both, and the
+     * guard keeps a genuinely broken script from rebuilding forever.
+     */
+    retryStudySet () {
+      if (this.studyRetry) return
+      this.studyRetry = true
+      setTimeout(() => {
+        if (this._isDestroyed || !this.handle) return
+        this.remount()
+      }, 400)
     },
     /**
      * Bring the drawn studies in line with the checked set without a rebuild.
@@ -591,6 +627,7 @@ export default {
           // eslint-disable-next-line no-await-in-loop
           const entityId = await chart.createStudy(study.name, study.metainfo.overlay === true, false, this.studyInputValues(study))
           if (entityId) {
+            this.studyRetry = false
             this.studyRecords.push({
               entityId,
               indicatorId: Number(study.indicatorId || 0),
@@ -599,8 +636,11 @@ export default {
               descriptor: study,
               params: { ...(study.params || {}) }
             })
+          } else {
+            this.retryStudySet()
           }
         } catch (err) {
+          this.retryStudySet()
           if (process.env.NODE_ENV !== 'production') {
             console.debug('createStudy failed', study.name, err)
           }
@@ -918,8 +958,29 @@ export default {
      * chart is still correct without it, whereas an exception here would leave
      * the user with an empty pane and no explanation.
      */
-    async loadIndicators () {
+    loadIndicators () {
       if (!this.indicators.length) return []
+      // The getter is asked once per widget; `drawStudies` asks for the same
+      // list a moment later. Resolving twice would let `createStudy` run
+      // against a registry the library had not finished filling, so both call
+      // sites share one promise. The signature keeps a changed set honest.
+      const signature = this.indicatorsSignature(this.indicators)
+      if (this.registryPromise && this.registrySignature === signature) {
+        return this.registryPromise
+      }
+      const promise = this.resolveIndicatorRegistry()
+      this.registrySignature = signature
+      this.registryPromise = promise
+      return promise
+    },
+    /**
+     * Resolve the studies the widget needs for the current set.
+     *
+     * Registered here, drawn by `drawStudies` once the widget reports ready.
+     * The library only takes the registry from the getter; it never puts a
+     * study on the chart by itself.
+     */
+    async resolveIndicatorRegistry () {
       const { indicators, failures } = await resolveCustomIndicators({
         indicators: this.withStudyParams(this.indicators),
         market: this.market,
@@ -932,9 +993,6 @@ export default {
         barCache: this.barCache
       })
       this.reportFailures(failures)
-      // Registered here, drawn by `drawStudies` once the widget reports ready.
-      // The library only takes the registry from this getter; it never puts a
-      // study on the chart by itself.
       return indicators
     },
     /**
