@@ -60,7 +60,8 @@ test('the candles request carries a market label the backend accepts', () => {
   // Archives and hand-written tickers drift to lower case; the endpoint only
   // takes `Crypto`, so the label is canonicalised once, before any request.
   assert.match(datafeed, /market: canonicalMarket\(symbolInfo\.market\)/)
-  assert.match(datafeed, /market: canonicalMarket\(symbolInfo\.market\),[\s\S]{0,80}keyword,/)
+  assert.match(datafeed, /const market = canonicalMarket\(symbolInfo\.market\)/)
+  assert.match(datafeed, /fetchSymbolRows\('\/api\/market\/symbols\/search'/)
   assert.match(datafeed, /export function canonicalMarket/)
 })
 
@@ -288,8 +289,9 @@ test('the library search is answered by the datafeed', () => {
   // `header_symbol_search` is unfrozen, and the bundle calls `searchSymbols`
   // unconditionally, so a datafeed without it throws on the first keystroke.
   assert.match(datafeed, /async searchSymbols \(userInput, exchange, symbolType, onResult, onError\)/)
-  assert.match(datafeed, /url: '\/api\/market\/symbols\/search'/)
-  assert.match(datafeed, /keyword,/)
+  assert.match(datafeed, /await fetchSymbolRows\('\/api\/market\/symbols\/search'/)
+  assert.match(datafeed, /await fetchSymbolRows\('\/api\/market\/symbols\/hot'/)
+  assert.match(datafeed, /rows = await fetchSymbolRows\('\/api\/market\/symbols\/search', \{ market, keyword: base, limit: 30 \}/)
   // Each hit is encoded with the venue that produced it, or picking a swap
   // instrument from the spot list would chart a different market.
   assert.match(datafeed, /const ticker = encodeSymbolTicker\(/)
@@ -303,11 +305,27 @@ test('the encoded ticker is identity, the instrument is what gets fetched', () =
   assert.match(datafeed, /instrument \|\| symbolInfo\.ticker,/)
 })
 
-test('the venue is no longer offered as a second symbol authority', () => {
-  // The toolbar's exchange/product pickers were deleted in this phase; leaving
-  // the lists populated would show the library two competing answers.
-  assert.match(datafeed, /exchanges: \[\]/)
-  assert.match(datafeed, /symbols_types: \[\]/)
+test('the symbol dialog can browse the market before typing', () => {
+  // The toolbar pickers are gone, so the library's own dialog has to carry the
+  // venue filter and an opening list; an empty box that answers [] reads as a
+  // broken picker.
+  assert.match(datafeed, /const MARKET_EXCHANGES = \{/)
+  assert.match(datafeed, /exchanges: MARKET_EXCHANGES\[symbolInfo\.market\] \|\| \[\]/)
+  assert.match(datafeed, /symbols_types: MARKET_SYMBOL_TYPES\[symbolInfo\.market\] \|\| \[\]/)
+  assert.match(datafeed, /const fetchSymbolRows = async \(url, params, venue, kind\) => \{/)
+  assert.match(datafeed, /if \(venue\) payload\.exchange_id = venue/)
+  assert.match(datafeed, /if \(kind\) payload\.market_type = kind/)
+})
+
+test('one registry promise feeds both the getter and the drawing step', () => {
+  // If the two resolved separately, `createStudy` could run before the library
+  // finished filling its registry and the chart would report an unknown study.
+  const wrapper = read('src/components/TradingViewChart/index.vue')
+  assert.match(wrapper, /const promise = this\.resolveIndicatorRegistry\(\)/)
+  assert.match(wrapper, /this\.registrySignature = signature/)
+  assert.match(wrapper, /const indicators = await this\.loadIndicators\(\)/)
+  assert.match(wrapper, /await new Promise\(resolve => setTimeout\(resolve, 0\)\)/)
+  assert.match(wrapper, /retryStudySet \(\) \{/)
 })
 
 test('a symbol resolved by the library is reported back to the pane', () => {

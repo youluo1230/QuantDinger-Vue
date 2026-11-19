@@ -83,6 +83,33 @@ const MARKET_PROFILES = {
 }
 
 /**
+ * The venues the library may filter a search by.
+ *
+ * The ids are the backend's own (`SUPPORTED_CRYPTO_EXCHANGE_IDS`); the labels
+ * are only what the dialog renders. A market with no such picker advertises an
+ * empty list rather than inventing one, because the library would otherwise
+ * narrow every result to the first venue it was handed.
+ */
+const MARKET_EXCHANGES = {
+  Crypto: [
+    { value: 'binance', name: 'Binance' },
+    { value: 'bitget', name: 'Bitget' },
+    { value: 'bybit', name: 'Bybit' },
+    { value: 'okx', name: 'OKX' },
+    { value: 'gate', name: 'Gate' },
+    { value: 'htx', name: 'HTX' }
+  ]
+}
+
+/** Instrument kinds a search may be narrowed to, per market. */
+const MARKET_SYMBOL_TYPES = {
+  Crypto: [
+    { name: 'Spot', value: 'spot' },
+    { name: 'Swap', value: 'swap' }
+  ]
+}
+
+/**
  * The backend's market names are capitalised (`Crypto`, `USStock`); archives
  * and hand-written tickers drift to lower case often enough that every request
  * would 400 on "Unsupported market 'crypto'". Normalise before the value leaves
@@ -375,6 +402,27 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
     }
   }
 
+  /**
+   * One catalogue query as rows, with the dialog's venue filters applied.
+   *
+   * The hot endpoint has no venue parameters -- it is a curated list -- so a
+   * filtered browse narrows it in place. A search carries the filters to the
+   * backend, which is what makes "only Binance swaps" answerable.
+   */
+  const fetchSymbolRows = async (url, params, venue, kind) => {
+    const payload = Object.assign({}, params)
+    if (url.endsWith('/search')) {
+      if (venue) payload.exchange_id = venue
+      if (kind) payload.market_type = kind
+    }
+    const response = await request({ url, method: 'get', params: payload, timeout: 20000 })
+    let rows = response?.code === 1 && Array.isArray(response.data) ? response.data : []
+    if (url.endsWith('/hot') && (venue || kind)) {
+      rows = rows.filter(row => (!venue || String(row?.exchange_id || '') === venue) && (!kind || String(row?.market_type || '') === kind))
+    }
+    return rows
+  }
+
   return {
     onReady (callback) {
       // The library tolerates an async answer here and needs it: reporting
@@ -385,12 +433,11 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
         // eslint-disable-next-line node/no-callback-literal
         callback({
           supported_resolutions: ['1', '3', '5', '15', '30', '60', '240', '1D', '1W'],
-          // The header's exchange and instrument-type pickers are not a second
-          // symbol authority: every symbol comes from `searchSymbols`, which
-          // already knows each result's venue. Advertising the current market
-          // here would make the library filter search results by it.
-          exchanges: [],
-          symbols_types: [],
+          // The dialog's venue and instrument-kind filters. Their values are
+          // what `searchSymbols` receives back; they are not a symbol
+          // authority, every result still carries its own venue.
+          exchanges: MARKET_EXCHANGES[symbolInfo.market] || [],
+          symbols_types: MARKET_SYMBOL_TYPES[symbolInfo.market] || [],
           currency_codes: ['USD', 'USDT', 'USDC']
         })
       }, 0)
@@ -450,29 +497,29 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
      */
     async searchSymbols (userInput, exchange, symbolType, onResult, onError) {
       const keyword = String(userInput == null ? '' : userInput).trim()
-      if (!keyword) {
-        onResult([])
-        return
-      }
+      const market = canonicalMarket(symbolInfo.market)
+      const venue = exchange ? String(exchange).trim() : ''
+      const kind = symbolType ? String(symbolType).trim() : ''
       try {
-        const response = await request({
-          url: '/api/market/symbols/search',
-          method: 'get',
-          params: {
-            market: canonicalMarket(symbolInfo.market),
-            keyword,
-            limit: 30
-          },
-          timeout: 20000
-        })
-        const rows = response?.code === 1 && Array.isArray(response.data) ? response.data : []
+        // An empty box is not an empty answer: the dialog opens on the curated
+        // hot list. That list is curated per market and can be empty for venue
+        // data the backend has not synced, so the pane's own asset seeds it.
+        let rows = keyword
+          ? await fetchSymbolRows('/api/market/symbols/search', { market, keyword, limit: 30 }, venue, kind)
+          : await fetchSymbolRows('/api/market/symbols/hot', { market, limit: 30 }, venue, kind)
+        if (!keyword && !rows.length) {
+          const base = String(symbolInfo.instrument || '').split('/')[0].trim()
+          if (base) {
+            rows = await fetchSymbolRows('/api/market/symbols/search', { market, keyword: base, limit: 30 }, venue, kind)
+          }
+        }
         const profile = MARKET_PROFILES[symbolInfo.market] || MARKET_PROFILES.Crypto
         const results = []
         for (const row of rows) {
-          const market = String(row?.market || symbolInfo.market || '').trim()
+          const rowMarket = String(row?.market || symbolInfo.market || '').trim()
           const instrument = String(row?.symbol || row?.instrument_id || '').trim()
           const ticker = encodeSymbolTicker({
-            market,
+            market: rowMarket,
             marketType: row?.market_type,
             exchangeId: row?.exchange_id,
             instrumentId: row?.instrument_id || instrument,
@@ -483,8 +530,8 @@ export function createDatafeed ({ market, symbol, exchangeId, marketType, instru
             symbol: ticker,
             full_name: String(row?.name || instrument),
             description: [instrument, row?.exchange_id, row?.market_type].filter(Boolean).join(' · '),
-            exchange: String(row?.exchange_id || market || ''),
-            type: (MARKET_PROFILES[market] || profile).type
+            exchange: String(row?.exchange_id || rowMarket || ''),
+            type: (MARKET_PROFILES[rowMarket] || profile).type
           })
         }
         onResult(results)
