@@ -17,7 +17,7 @@ import { decodeSymbolTicker, encodeSymbolTicker, isEncodedSymbolTicker } from '.
 test('an instrument is encoded with its venue', () => {
   assert.equal(
     encodeSymbolTicker({ market: 'Crypto', marketType: 'swap', exchangeId: 'binance', instrumentId: 'BTC/USDT' }),
-    'QD:Crypto:swap:binance:BTC/USDT'
+    'QD:BTC/USDT:Crypto:swap:binance'
   )
 })
 
@@ -43,15 +43,23 @@ test('a bare symbol is not an encoded ticker', () => {
   // must keep meaning "the venue this pane already holds", not a decode failure.
   assert.equal(decodeSymbolTicker('BTC/USDT'), null)
   assert.equal(isEncodedSymbolTicker('BTC/USDT'), false)
-  assert.equal(isEncodedSymbolTicker('QD:Crypto:swap:binance:BTC/USDT'), true)
+  assert.equal(isEncodedSymbolTicker('QD:BTC/USDT:Crypto:swap:binance'), true)
 })
 
 test('an empty instrument produces no ticker instead of a half-formed one', () => {
   assert.equal(encodeSymbolTicker({ market: 'Crypto', marketType: 'spot', exchangeId: 'binance' }), '')
   assert.equal(decodeSymbolTicker(''), null)
-  assert.equal(decodeSymbolTicker('QD:Crypto:swap:binance:'), null)
+  assert.equal(decodeSymbolTicker('QD::Crypto:swap:binance'), null)
+})
+
+test('the pre-swap order is still decoded', () => {
+  // Archives written before the instrument moved to the second slot must keep
+  // loading: the market label in that slot is what tells the orders apart.
+  const legacy = decodeSymbolTicker('QD:Crypto:swap:binance:BTC/USDT')
+  assert.deepEqual(legacy, { market: 'Crypto', marketType: 'swap', exchangeId: 'binance', instrumentId: 'BTC/USDT' })
+  assert.equal(decodeSymbolTicker('QD:Crypto:spot:okx:SOL/USDT').instrumentId, 'SOL/USDT')
 })
 
 test('a ticker without a market is not decodable', () => {
-  assert.equal(decodeSymbolTicker('QD::swap:binance:BTC/USDT'), null)
+  assert.equal(decodeSymbolTicker('QD:BTC/USDT::swap:binance'), null)
 })

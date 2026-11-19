@@ -30,7 +30,7 @@ const info = (id) => ({ 7: { name: 'EMA', params: { Length: 21 } }, 9: { name: '
 
 test('a pane travels as one encoded ticker, not as loose venue fields', () => {
   assert.deepEqual(serialisePane(cryptoPane, info), {
-    symbol: 'QD:Crypto:swap:binance:BTC/USDT',
+    symbol: 'QD:BTC/USDT:Crypto:swap:binance',
     timeframe: '1H',
     chartType: 'candle_solid',
     indicators: [
@@ -59,7 +59,7 @@ test('the archive keeps the layout, the active pane and the editor state', () =>
   assert.equal(workspace.activePane, 1)
   assert.equal(workspace.editorOpen, false)
   assert.equal(workspace.panes.length, 2)
-  assert.equal(workspace.panes[0].symbol, 'QD:Crypto:swap:binance:BTC/USDT')
+  assert.equal(workspace.panes[0].symbol, 'QD:BTC/USDT:Crypto:swap:binance')
   assert.equal(workspace.panes[0].timeframe, '1H')
 })
 
@@ -72,7 +72,7 @@ test('a layout the IDE cannot draw falls back to one pane and pane zero', () => 
 
 test('loading a pane restores the venue the ticker carries', () => {
   const pane = paneFromArchive(
-    { symbol: 'QD:crypto:spot:okx:SOL/USDT', timeframe: '4H', chartType: 'line', indicators: [{ id: '5' }, { id: 0 }] },
+    { symbol: 'QD:SOL/USDT:crypto:spot:okx', timeframe: '4H', chartType: 'line', indicators: [{ id: '5' }, { id: 0 }] },
     { id: 'pane-1', market: 'USStock', symbol: 'AAPL', exchangeId: 'nasdaq', marketType: 'spot', instrumentId: 'AAPL', timeframe: '1D', candleType: 'candle_solid' }
   )
   assert.equal(pane.market, 'crypto')
@@ -112,7 +112,7 @@ test('old indicator-list templates become a single pane that keeps the instrumen
 
 test('template rows are read in either shape', () => {
   assert.equal(isLegacyTemplate({ id: 'a', name: 'old', indicators: [] }), true)
-  assert.equal(workspaceFromTemplate({ id: 'a', name: 'new', workspace: encodeWorkspace({ panes: [cryptoPane] }) }).panes[0].symbol, 'QD:Crypto:swap:binance:BTC/USDT')
+  assert.equal(workspaceFromTemplate({ id: 'a', name: 'new', workspace: encodeWorkspace({ panes: [cryptoPane] }) }).panes[0].symbol, 'QD:BTC/USDT:Crypto:swap:binance')
   assert.equal(workspaceFromTemplate({ id: 'b', indicators: [{ id: 4 }] }).panes[0].indicators[0].id, 4)
   assert.equal(workspaceFromTemplate(null), null)
 })
@@ -134,7 +134,7 @@ test('the local cache of the older IDE migrates into one workspace', () => {
   assert.equal(workspace.layoutMode, 2)
   assert.equal(workspace.activePane, 1)
   assert.equal(workspace.editorOpen, false)
-  assert.equal(workspace.panes[1].symbol, 'QD:Crypto:swap:binance:ETH/USDT')
+  assert.equal(workspace.panes[1].symbol, 'QD:ETH/USDT:Crypto:swap:binance')
   assert.equal(workspace.panes[0].indicators[0].params.Length, 21)
   assert.equal(workspace.panes[1].indicators[0].params.Length, 30)
   assert.equal(workspace.panes[0].chartType, 'candle_solid')
